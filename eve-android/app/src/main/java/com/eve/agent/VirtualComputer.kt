@@ -95,13 +95,16 @@ class VirtualComputer private constructor(private val context: Context) {
     private fun executePython(script: String): String {
         return try {
             val py = Python.getInstance()
-            // Capture stdout via Python's io.StringIO
             val io = py.getModule("io")
             val sio = io.callAttr("StringIO")
             val sys = py.getModule("sys")
+            val originalStdout = sys["stdout"]
             sys["stdout"] = sio
-            py.getBuiltins().callAttr("exec", script)
-            sys["stdout"] = sys.callAttr("__stdout__")   // restore
+            try {
+                py.getBuiltins().callAttr("exec", script)
+            } finally {
+                sys["stdout"] = originalStdout   // always restore, even on exception
+            }
             sio.callAttr("getvalue").toString()
         } catch (e: Exception) {
             "Python error: ${e.message}"
@@ -114,7 +117,14 @@ class VirtualComputer private constructor(private val context: Context) {
                 .redirectErrorStream(true)
                 .start()
             val output = process.inputStream.bufferedReader().readText()
-            val exitCode = process.waitFor()
+            // 30-second hard timeout — prevents runaway shell commands from
+            // blocking the agent thread indefinitely.
+            val finished = process.waitFor(30, TimeUnit.SECONDS)
+            if (!finished) {
+                process.destroyForcibly()
+                return "Shell error: timed out after 30 s"
+            }
+            val exitCode = process.exitValue()
             if (exitCode == 0) output else "Shell error (exit $exitCode): $output"
         } catch (e: Exception) {
             "Shell error: ${e.message}"
@@ -139,10 +149,25 @@ class VirtualComputer private constructor(private val context: Context) {
     companion object {
         @Volatile private var instance: VirtualComputer? = null
 
-        /** Called by EveService; must be called before Python agents run. */
+        /**
+         * Initialise the singleton.  Must be called by EveService **before**
+         * the Python runtime starts (android_computer.py calls getInstance()
+         * at import time).
+         *
+         * Also consumes any [VirtualAccessibilityService] that connected while
+         * the singleton was not yet initialised, closing the race window where
+         * gestures/screenshots would silently fail.
+         */
         fun init(context: Context): VirtualComputer =
             instance ?: synchronized(this) {
-                instance ?: VirtualComputer(context.applicationContext).also { instance = it }
+                instance ?: VirtualComputer(context.applicationContext).also { computer ->
+                    instance = computer
+                    // Consume any accessibility service that connected early
+                    VirtualAccessibilityService.pendingInstance?.let { svc ->
+                        computer.setAccessibilityService(svc)
+                        VirtualAccessibilityService.pendingInstance = null
+                    }
+                }
             }
 
         /** Used by Python's android_computer.py via Chaquopy jclass bridge. */

@@ -50,22 +50,39 @@ class EveService : Service() {
         }
         val py = Python.getInstance()
 
+        // Expose the app's private files directory to Python so agents can
+        // store data without hardcoding paths (filesDir differs across users
+        // and profile IDs on multi-user Android devices).
+        val osModule = py.getModule("os")
+        osModule.callAttr("environ").__setitem__(
+            "EVE_DATA_DIR", filesDir.absolutePath
+        )
+
         // Instantiate EVE orchestrator
         val eveModule = py.getModule("eve.orchestrator")
         eveInstance = eveModule.callAttr("EVE")
 
-        // Instantiate agents
-        val hermes   = py.getModule("eve.hermes_agent").callAttr("HermesAgent").call()
+        // Instantiate agents — pass the data dir so Hermes can persist its token
+        val hermes   = py.getModule("eve.hermes_agent").callAttr("HermesAgent")
+            .call(filesDir.absolutePath)
         val hacxgent = py.getModule("eve.hacxgent_agent").callAttr("HacxgentAgent").call()
 
         eveInstance.callAttr("register_agent", "hermes", hermes)
         eveInstance.callAttr("register_agent", "hacxgent", hacxgent)
+
+        // Log lines flow: Python orchestrator → EveKotlinBridge.onLogLine()
+        //                  → EveEventBus → EveViewModel → DashboardFragment
+        // (No extra wiring needed here — EveKotlinBridge is called directly
+        //  from orchestrator.py via Chaquopy's jclass bridge.)
 
         // Run the orchestrator loop on a background thread
         Thread({ eveInstance.callAttr("run") }, "eve-orchestrator").apply {
             isDaemon = true
             start()
         }
+
+        // Broadcast initial status so the Dashboard can show "running"
+        EveEventBus.emit(EveEvent.StatusChanged("EVE is running"))
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int =

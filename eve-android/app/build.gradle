@@ -80,8 +80,12 @@ dependencies {
     implementation 'net.openid:appauth:0.11.1'
     implementation 'org.tensorflow:tensorflow-lite:2.14.0'
     implementation 'org.tensorflow:tensorflow-lite-support:0.4.4'
-    // Kotlin scripting — heavy; only needed if runtime .kts evaluation is required
-    implementation 'org.jetbrains.kotlin:kotlin-scripting-jsr223:1.9.0'
-    implementation 'org.jetbrains.kotlin:kotlin-scripting-jvm-host:1.9.0'
+    // NOTE: kotlin-scripting-jsr223 / kotlin-scripting-jvm-host were removed.
+    // They add ~30 MB to the APK and are not used by any current code path.
+    // Re-add them only if runtime .kts evaluation is explicitly required.
     implementation 'androidx.legacy:legacy-support-v4:1.0.0'
+
+    // Kotlin coroutines — required for SharedFlow (EveEventBus) and viewModelScope
+    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3'
+    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-core:1.7.3'
 }

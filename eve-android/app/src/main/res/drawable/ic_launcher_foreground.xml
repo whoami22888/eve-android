@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Adaptive icon foreground layer for EVE Agent.
+  Replace with your actual branded artwork before publishing.
+  The "E" monogram is a placeholder that satisfies the mipmap reference
+  in AndroidManifest.xml during development.
+-->
+<vector
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Background circle -->
+    <path
+        android:fillColor="#FF6200EE"
+        android:pathData="M54,54m-54,0a54,54 0,1 1,108 0a54,54 0,1 1,-108 0" />
+
+    <!-- "E" letterform -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="
+M36,30 L72,30 L72,39 L45,39 L45,51 L68,51 L68,60 L45,60 L45,69 L72,69 L72,78 L36,78 Z" />
+</vector>
