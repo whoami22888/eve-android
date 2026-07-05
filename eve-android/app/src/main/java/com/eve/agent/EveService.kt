@@ -133,19 +133,23 @@ class EveService : Service() {
      */
     fun submitTask(action: String, params: Map<String, String> = emptyMap()) {
         val tokenFile = File(filesDir, "hermes_token.txt")
+        val portFile  = File(filesDir, "hermes_port.txt")
         if (!tokenFile.exists()) {
             Log.w(TAG, "submitTask: token file not found — Hermes not started yet")
             EveEventBus.emit(EveEvent.LogLine("Cannot submit task: EVE not ready yet", "WARN"))
             return
         }
         val token = tokenFile.readText().trim()
+        // Read the port that HermesAgent actually bound to (may differ from 5001
+        // if that port was already in use when the service started).
+        val port = portFile.takeIf { it.exists() }?.readText()?.trim()?.toIntOrNull() ?: 5001
         val body = JSONObject().apply {
             put("action", action)
             put("params", JSONObject(params as Map<*, *>))
         }.toString().toRequestBody("application/json".toMediaType())
 
         val request = Request.Builder()
-            .url("http://127.0.0.1:5001/command")
+            .url("http://127.0.0.1:$port/command")
             .addHeader("Authorization", "Bearer $token")
             .post(body)
             .build()

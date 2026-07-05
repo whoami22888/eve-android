@@ -65,11 +65,18 @@ class MemoryEditorFragment : Fragment() {
     private fun saveMemory() {
         val json = JSONObject()
         entries.forEach { (k, v) -> json.put(k, v) }
-        // Write to a temp file then rename — atomic on Linux/Android so the
-        // Python eve.memory module can never see a half-written file.
+        // Write to a temp file in the same directory, then rename.
+        // Same-directory rename is atomic on Linux/Android (single filesystem),
+        // so the Python eve.memory module can never see a half-written file.
         val tmp = File(memoryFile.parent, "memory.tmp")
         tmp.writeText(json.toString(2))
-        tmp.renameTo(memoryFile)
+        val ok = tmp.renameTo(memoryFile)
+        if (!ok) {
+            // Fallback: direct write (non-atomic, but better than silent data loss)
+            android.util.Log.w("MemoryEditor", "Atomic rename failed; falling back to direct write")
+            memoryFile.writeText(json.toString(2))
+            tmp.delete()
+        }
     }
 
     private fun deleteEntry(key: String) {

@@ -108,11 +108,15 @@ class HermesAgent:
             or os.environ.get("EVE_DATA_DIR")
             or "/data/data/com.eve.agent/files"
         )
+        self._data_dir = resolved_dir
         self.task_queue: TaskQueue = None
         self._token: str = _load_or_create_token(resolved_dir)
         self._port: int  = _find_free_port()
         self._app = Flask(__name__)
         self._setup_routes()
+        # Write the chosen port to a file so Kotlin's EveService can discover
+        # it without needing a separate IPC channel.
+        self._persist_port()
 
     # ── Auth ──────────────────────────────────────────────────────────────────
 
@@ -184,6 +188,15 @@ class HermesAgent:
         else:
             task.result = f"Unhandled meta action: {task.action}"
         task.status = "completed"
+
+    def _persist_port(self) -> None:
+        """Write the chosen port to hermes_port.txt so Kotlin can read it."""
+        try:
+            port_path = os.path.join(self._data_dir, "hermes_port.txt")
+            with open(port_path, "w") as f:
+                f.write(str(self._port))
+        except OSError as exc:
+            logger.warning("Could not persist Hermes port: %s", exc)
 
     def run(self) -> None:
         logger.info("HermesAgent HTTP gateway on 127.0.0.1:%d", self._port)

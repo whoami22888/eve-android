@@ -108,7 +108,7 @@ class AgentComputerFragment : Fragment() {
             if (event.action != MotionEvent.ACTION_UP) return@setOnTouchListener true
             if (realScreenW == 0 || realScreenH == 0) return@setOnTouchListener true
 
-            // ImageView uses fitCenter — calculate the actual image rect inside the view
+            // ImageView uses fitCenter — calculate the actual rendered image rect
             val viewW   = v.width.toFloat()
             val viewH   = v.height.toFloat()
             val imgW    = realScreenW.toFloat()
@@ -117,8 +117,17 @@ class AgentComputerFragment : Fragment() {
             val offsetX = (viewW - imgW * scale) / 2f
             val offsetY = (viewH - imgH * scale) / 2f
 
-            val relX = ((event.x - offsetX) / scale).toInt().coerceIn(0, realScreenW)
-            val relY = ((event.y - offsetY) / scale).toInt().coerceIn(0, realScreenH)
+            // Reject taps that land in the letterbox padding outside the image
+            val tapX = event.x
+            val tapY = event.y
+            if (tapX < offsetX || tapX > offsetX + imgW * scale ||
+                tapY < offsetY || tapY > offsetY + imgH * scale) {
+                return@setOnTouchListener true   // outside image — ignore
+            }
+
+            // Map to device pixel coords; clamp to valid range [0, dim-1]
+            val relX = ((tapX - offsetX) / scale).toInt().coerceIn(0, realScreenW - 1)
+            val relY = ((tapY - offsetY) / scale).toInt().coerceIn(0, realScreenH - 1)
 
             viewLifecycleOwner.lifecycleScope.launch(Dispatchers.IO) {
                 try {
