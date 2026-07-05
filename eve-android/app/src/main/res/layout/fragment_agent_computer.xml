@@ -3,34 +3,93 @@
     xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="vertical"
-    android:padding="16dp">
+    android:orientation="vertical">
 
-    <TextView
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="Agent Computer"
-        android:textSize="24sp"
-        android:textStyle="bold"
-        android:layout_marginBottom="16dp" />
-
-    <!-- Live screenshot from VirtualComputer -->
-    <ImageView
-        android:id="@+id/screenshotView"
+    <!-- Live screenshot — fills available space -->
+    <FrameLayout
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1"
-        android:scaleType="fitCenter"
-        android:contentDescription="Live device screenshot" />
+        android:background="#111111">
 
-    <!-- TODO: gesture-capture overlay and manual command input -->
-    <TextView
-        android:id="@+id/overlayHint"
-        android:layout_width="wrap_content"
+        <ImageView
+            android:id="@+id/screenshotView"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:scaleType="fitCenter"
+            android:contentDescription="Live device screenshot" />
+
+        <!-- Shown when no screenshot is available yet -->
+        <TextView
+            android:id="@+id/screenshotPlaceholder"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center"
+            android:text="No screenshot yet\n(Accessibility Service must be enabled)"
+            android:textColor="#AAFFFFFF"
+            android:textAlignment="center"
+            android:textSize="13sp" />
+
+        <!-- Overlay badge while auto-refresh is active -->
+        <TextView
+            android:id="@+id/refreshBadge"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="top|end"
+            android:layout_margin="8dp"
+            android:paddingHorizontal="8dp"
+            android:paddingVertical="4dp"
+            android:text="● LIVE"
+            android:textColor="#FF4CAF50"
+            android:textSize="10sp"
+            android:background="#CC000000"
+            android:visibility="gone" />
+
+    </FrameLayout>
+
+    <!-- Control bar -->
+    <LinearLayout
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="Tap to send click gesture"
-        android:textSize="12sp"
-        android:layout_gravity="center_horizontal"
-        android:layout_marginTop="8dp" />
+        android:orientation="horizontal"
+        android:padding="8dp"
+        android:gravity="center_vertical">
+
+        <EditText
+            android:id="@+id/commandInput"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:hint="Command (action + JSON params)"
+            android:inputType="text"
+            android:singleLine="true"
+            android:imeOptions="actionSend" />
+
+        <Button
+            android:id="@+id/sendCommandBtn"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:text="Send"
+            style="@style/Widget.MaterialComponents.Button.OutlinedButton" />
+
+        <Button
+            android:id="@+id/screenshotBtn"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="4dp"
+            android:text="📷"
+            style="@style/Widget.MaterialComponents.Button.TextButton" />
+
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/tapHint"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Tap the screenshot to send a click gesture to the device"
+        android:textSize="11sp"
+        android:textAlignment="center"
+        android:paddingBottom="8dp" />
 
 </LinearLayout>

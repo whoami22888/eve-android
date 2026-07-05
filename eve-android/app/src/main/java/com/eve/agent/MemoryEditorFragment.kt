@@ -65,7 +65,11 @@ class MemoryEditorFragment : Fragment() {
     private fun saveMemory() {
         val json = JSONObject()
         entries.forEach { (k, v) -> json.put(k, v) }
-        memoryFile.writeText(json.toString(2))
+        // Write to a temp file then rename — atomic on Linux/Android so the
+        // Python eve.memory module can never see a half-written file.
+        val tmp = File(memoryFile.parent, "memory.tmp")
+        tmp.writeText(json.toString(2))
+        tmp.renameTo(memoryFile)
     }
 
     private fun deleteEntry(key: String) {

@@ -9,26 +9,45 @@ import android.os.Binder
 import android.os.Build
 import android.os.IBinder
 import android.provider.Settings
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.chaquo.python.Python
 import com.chaquo.python.PyObject
 import com.chaquo.python.android.AndroidPlatform
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONObject
+import java.io.File
+import java.util.concurrent.TimeUnit
+
+private const val TAG = "EveService"
 
 /**
  * EveService is a long-running foreground service that:
  *  - Starts the Chaquopy Python runtime
  *  - Instantiates the EVE orchestrator and its agents (Hermes, Hacxgent)
- *  - Exposes a LocalBinder so MainActivity can query status
+ *  - Exposes a [LocalBinder] so MainActivity / Fragments can submit tasks
+ *    and query status without going through the network
  */
 class EveService : Service() {
 
     private lateinit var eveInstance: PyObject
-    // -------------------------------------------------------------------------
-    // Lifecycle
-    // -------------------------------------------------------------------------
+    private lateinit var crashReporter: CrashReporter
+
+    private val okHttp = OkHttpClient.Builder()
+        .connectTimeout(5, TimeUnit.SECONDS)
+        .readTimeout(10, TimeUnit.SECONDS)
+        .build()
+
+    // ── Lifecycle ─────────────────────────────────────────────────────────────
 
     override fun onCreate() {
         super.onCreate()
+
+        crashReporter = CrashReporter(applicationContext)
+        installUncaughtExceptionHandler()
 
         startForeground(NOTIFICATION_ID, buildNotification())
 
@@ -90,15 +109,11 @@ class EveService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
-        // Signal the Python side to stop
-        try {
-            eveInstance.callAttr("stop")
-        } catch (_: Exception) {}
+        try { eveInstance.callAttr("stop") } catch (_: Exception) {}
+        EveEventBus.emit(EveEvent.StatusChanged("EVE stopped"))
     }
 
-    // -------------------------------------------------------------------------
-    // Binding
-    // -------------------------------------------------------------------------
+    // ── Binding ───────────────────────────────────────────────────────────────
 
     override fun onBind(intent: Intent?): IBinder = LocalBinder()
 
@@ -106,9 +121,53 @@ class EveService : Service() {
         fun getService(): EveService = this@EveService
     }
 
-    // -------------------------------------------------------------------------
-    // Helpers
-    // -------------------------------------------------------------------------
+    // ── Task submission ───────────────────────────────────────────────────────
+
+    /**
+     * Submit a task to the EVE pipeline via the local Hermes HTTP gateway.
+     *
+     * This is the same path that external tools use (adb-forwarded curl), but
+     * called directly from Kotlin so Fragments don't need adb.
+     *
+     * Must be called on a background thread (performs network I/O).
+     */
+    fun submitTask(action: String, params: Map<String, String> = emptyMap()) {
+        val tokenFile = File(filesDir, "hermes_token.txt")
+        if (!tokenFile.exists()) {
+            Log.w(TAG, "submitTask: token file not found — Hermes not started yet")
+            EveEventBus.emit(EveEvent.LogLine("Cannot submit task: EVE not ready yet", "WARN"))
+            return
+        }
+        val token = tokenFile.readText().trim()
+        val body = JSONObject().apply {
+            put("action", action)
+            put("params", JSONObject(params as Map<*, *>))
+        }.toString().toRequestBody("application/json".toMediaType())
+
+        val request = Request.Builder()
+            .url("http://127.0.0.1:5001/command")
+            .addHeader("Authorization", "Bearer $token")
+            .post(body)
+            .build()
+
+        okHttp.newCall(request).enqueue(object : okhttp3.Callback {
+            override fun onFailure(call: okhttp3.Call, e: java.io.IOException) {
+                val msg = "Task submit failed (${action}): ${e.message}"
+                Log.e(TAG, msg)
+                crashReporter.logException(e, "submitTask")
+                EveEventBus.emit(EveEvent.LogLine(msg, "ERROR"))
+            }
+            override fun onResponse(call: okhttp3.Call, response: okhttp3.Response) {
+                response.use {
+                    EveEventBus.emit(EveEvent.LogLine(
+                        "Task submitted: $action → ${response.code}", "INFO"
+                    ))
+                }
+            }
+        })
+    }
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
 
     private fun buildNotification(): Notification {
         val channelId = "eve_channel"
@@ -132,6 +191,21 @@ class EveService : Service() {
             contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
         ) ?: return false
         return prefString.contains("${packageName}/.VirtualAccessibilityService")
+    }
+
+    /**
+     * Forward any uncaught exceptions to [CrashReporter] and the event bus
+     * before the process dies, so the user sees something useful in the log.
+     */
+    private fun installUncaughtExceptionHandler() {
+        val existing = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            crashReporter.logException(throwable, "UncaughtException[${thread.name}]")
+            EveEventBus.emit(EveEvent.LogLine(
+                "CRASH in ${thread.name}: ${throwable.message}", "ERROR"
+            ))
+            existing?.uncaughtException(thread, throwable)
+        }
     }
 
     companion object {

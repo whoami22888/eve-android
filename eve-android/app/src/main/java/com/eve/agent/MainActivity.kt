@@ -16,7 +16,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var viewPager: ViewPager2
     private lateinit var tabLayout: TabLayout
 
-    private var eveService: EveService? = null
+    /** Exposed as `internal` so Fragments can call [EveService.submitTask]. */
+    internal var eveService: EveService? = null
     private var serviceBound = false
 
     private val serviceConnection = object : ServiceConnection {
@@ -41,7 +42,8 @@ class MainActivity : AppCompatActivity() {
             "Dashboard"      to DashboardFragment(),
             "Agent Computer" to AgentComputerFragment(),
             "Memory Editor"  to MemoryEditorFragment(),
-            "History"        to HistoryFragment()
+            "History"        to HistoryFragment(),
+            "Setup"          to SetupFragment()
         )
 
         val adapter = SectionPagerAdapter(this, sections)

@@ -3,7 +3,7 @@ eve/hermes_agent.py
 ===================
 HermesAgent — the HTTP command gateway.
 
-Runs a Flask server on 127.0.0.1:5001 (localhost only) so external tools or
+Runs a Flask server on 127.0.0.1 (localhost only) so external tools or
 the EVE Dashboard UI can submit tasks via REST.
 
 Task routing
@@ -15,33 +15,32 @@ so the EVE orchestrator can dispatch it to the right executor:
   Device actions  (screenshot, click, scan …) → agent = "hacxgent"
   Meta actions    (status, help …)             → agent = "hermes"  (handled inline)
 
-This fixes the previous bug where HermesAgent would silently swallow every
-device action by claiming to handle it.
-
 Authentication
 --------------
 All mutating endpoints require a Bearer token.  The token is stored in
 ``<data_dir>/hermes_token.txt`` (the app's private internal storage).
 
-Read it via:
-    adb shell run-as com.eve.agent cat files/hermes_token.txt
+Read it without adb: open the Setup tab inside the EVE app.
 
-Port: 5001 (avoids conflict with ADB's default 5000 forward).
+Port: 5001 (default), with automatic fallback to 5002–5010 if already bound.
 Forward: adb forward tcp:5001 tcp:5001
 """
 
 import logging
 import os
 import secrets
+import socket
 
 from flask import Flask, request, jsonify
 from .task_queue import Task, TaskQueue
 
 logger = logging.getLogger("EVE.HermesAgent")
 
+DEFAULT_PORT = 5001
+PORT_RANGE   = range(DEFAULT_PORT, DEFAULT_PORT + 10)   # 5001–5010
+
 # ── Action routing ────────────────────────────────────────────────────────────
 
-# Actions the hacxgent agent handles (device control, scans, captures)
 _HACXGENT_ACTIONS = frozenset({
     "screenshot", "scan", "audit",
     "capture", "analyze",
@@ -49,17 +48,14 @@ _HACXGENT_ACTIONS = frozenset({
     "execute_script", "http_get",
 })
 
-# Actions handled inline by Hermes (meta / status queries)
 _HERMES_ACTIONS = frozenset({
     "status", "help", "list_agents",
 })
 
-# Full allowlist — reject everything else
 _ALLOWED_ACTIONS = _HACXGENT_ACTIONS | _HERMES_ACTIONS
 
 
 def _route_action(action: str) -> str:
-    """Return the target agent name for this action."""
     if action in _HACXGENT_ACTIONS:
         return "hacxgent"
     return "hermes"
@@ -68,7 +64,6 @@ def _route_action(action: str) -> str:
 # ── Token helpers ─────────────────────────────────────────────────────────────
 
 def _load_or_create_token(data_dir: str) -> str:
-    """Load an existing auth token or generate and persist a new one."""
     token_path = os.path.join(data_dir, "hermes_token.txt")
     try:
         if os.path.exists(token_path):
@@ -84,15 +79,30 @@ def _load_or_create_token(data_dir: str) -> str:
         return secrets.token_hex(32)
 
 
+# ── Port probe ────────────────────────────────────────────────────────────────
+
+def _find_free_port() -> int:
+    """Return the first free port in PORT_RANGE, or DEFAULT_PORT as fallback."""
+    for port in PORT_RANGE:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                s.bind(("127.0.0.1", port))
+                return port
+            except OSError:
+                continue
+    logger.warning(
+        "All ports %d–%d are in use; falling back to %d (may fail)",
+        DEFAULT_PORT, DEFAULT_PORT + 9, DEFAULT_PORT
+    )
+    return DEFAULT_PORT
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 
 class HermesAgent:
-    PORT = 5001
 
     def __init__(self, data_dir: str = None):
-        # data_dir is passed by EveService.kt via the Python constructor call.
-        # Fall back to EVE_DATA_DIR env var (also set by EveService), then a
-        # hardcoded default (only used in tests outside Android).
         resolved_dir = (
             data_dir
             or os.environ.get("EVE_DATA_DIR")
@@ -100,10 +110,11 @@ class HermesAgent:
         )
         self.task_queue: TaskQueue = None
         self._token: str = _load_or_create_token(resolved_dir)
+        self._port: int  = _find_free_port()
         self._app = Flask(__name__)
         self._setup_routes()
 
-    # ── Auth helper ───────────────────────────────────────────────────────────
+    # ── Auth ──────────────────────────────────────────────────────────────────
 
     def _check_auth(self) -> bool:
         auth = request.headers.get("Authorization", "")
@@ -111,7 +122,7 @@ class HermesAgent:
             return False
         return secrets.compare_digest(auth[7:], self._token)
 
-    # ── Flask routes ──────────────────────────────────────────────────────────
+    # ── Routes ────────────────────────────────────────────────────────────────
 
     def _setup_routes(self):
         app = self._app
@@ -121,35 +132,38 @@ class HermesAgent:
             if not self._check_auth():
                 return jsonify({"error": "Unauthorized"}), 401
 
-            data = request.get_json(force=True, silent=True) or {}
+            data   = request.get_json(force=True, silent=True) or {}
             action = data.get("action", "").strip()
             params = data.get("params", {})
 
             if not action:
                 return jsonify({"error": "Missing 'action' field"}), 400
             if action not in _ALLOWED_ACTIONS:
-                return jsonify({"error": f"Action '{action}' not permitted"}), 400
+                return jsonify({"error": f"Action '{action}' not permitted",
+                                "allowed": sorted(_ALLOWED_ACTIONS)}), 400
             if not isinstance(params, dict):
                 return jsonify({"error": "'params' must be a JSON object"}), 400
             if self.task_queue is None:
                 return jsonify({"error": "Task queue not initialised"}), 503
 
-            target_agent = _route_action(action)
-            task = Task(agent=target_agent, action=action, params=params)
+            target = _route_action(action)
+            task   = Task(agent=target, action=action, params=params)
             self.task_queue.put(task)
-            logger.info(
-                "Accepted task %s (action=%s → agent=%s)",
-                task.id, action, target_agent
-            )
+            logger.info("Accepted task %s (action=%s → %s)", task.id, action, target)
             return jsonify({
-                "status": "accepted",
-                "task_id": task.id,
-                "routed_to": target_agent,
+                "status":     "accepted",
+                "task_id":    task.id,
+                "routed_to":  target,
+                "port":       self._port,
             }), 202
 
         @app.route("/health", methods=["GET"])
         def health():
-            return jsonify({"status": "ok", "agent": "hermes"})
+            return jsonify({
+                "status": "ok",
+                "agent":  "hermes",
+                "port":   self._port,
+            })
 
     # ── Agent protocol ────────────────────────────────────────────────────────
 
@@ -157,11 +171,9 @@ class HermesAgent:
         self.task_queue = q
 
     def can_handle(self, task: Task) -> bool:
-        """Hermes only handles meta tasks tagged to itself (status, help, etc.)."""
         return task.agent == "hermes"
 
     def assign_task(self, task: Task) -> None:
-        """Handle meta / status tasks inline."""
         action = task.action.lower()
         if action == "status":
             task.result = "EVE is running"
@@ -174,11 +186,10 @@ class HermesAgent:
         task.status = "completed"
 
     def run(self) -> None:
-        """Start the Flask HTTP gateway (blocking). Called on a daemon thread."""
-        logger.info("HermesAgent HTTP gateway on 127.0.0.1:%d", self.PORT)
+        logger.info("HermesAgent HTTP gateway on 127.0.0.1:%d", self._port)
         self._app.run(
             host="127.0.0.1",
-            port=self.PORT,
+            port=self._port,
             threaded=True,
-            use_reloader=False,    # reloader forks — breaks Chaquopy
+            use_reloader=False,
         )
