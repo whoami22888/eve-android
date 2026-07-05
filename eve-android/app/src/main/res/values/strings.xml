@@ -1,0 +1,11 @@
+<resources>
+    <string name="app_name">EVE Agent</string>
+    <string name="tab_dashboard">Dashboard</string>
+    <string name="tab_agent_computer">Agent Computer</string>
+    <string name="tab_memory_editor">Memory Editor</string>
+    <string name="tab_history">History</string>
+    <string name="status_starting">EVE is starting…</string>
+    <string name="status_running">EVE is running</string>
+    <string name="status_stopped">EVE has stopped</string>
+    <string name="accessibility_permission_hint">Please enable EVE\'s Accessibility Service in Settings to allow screen control.</string>
+</resources>
