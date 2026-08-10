@@ -23,7 +23,7 @@ android {
             version "3.11"
             buildPython System.getenv("PYTHON_BIN") ?: "python3"
             pip {
-                install "-r", "requirements.txt"
+                install "-r", "src/main/python/requirements.txt"
             }
         }
     }
