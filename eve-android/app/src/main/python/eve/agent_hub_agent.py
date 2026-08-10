@@ -1,9 +1,4 @@
-"""Model-backed five-stage Agent Hub pipeline.
-
-Pipeline: Planner -> Coder -> Reviewer -> Tester -> Security.
-EVE remains the orchestrator; the selected provider can automatically choose
-an appropriate model per stage when the model setting is ``auto``.
-"""
+"""Model-backed five-stage Agent Hub pipeline."""
 
 from __future__ import annotations
 
@@ -34,13 +29,11 @@ _ALLOWED_TEST_COMMANDS = (
     "./gradlew :app:testDebugUnitTest", "./gradlew :app:assembleDebug",
     "npm test", "npm run test", "npm run lint", "pytest", "python -m pytest",
 )
-
-# Only pass environment variables required to execute project tests. In
-# particular, provider credentials must never reach model-generated code.
 _SAFE_ENV_KEYS = (
     "PATH", "HOME", "TMPDIR", "TMP", "TEMP", "LANG", "LC_ALL", "USER",
     "JAVA_HOME", "ANDROID_HOME", "ANDROID_SDK_ROOT", "GRADLE_USER_HOME",
 )
+_ACTIVE_AGENT = None
 
 
 def _json(text: str) -> Dict:
@@ -57,10 +50,18 @@ def _safe_env() -> Dict[str, str]:
     return {key: value for key, value in os.environ.items() if key in _SAFE_ENV_KEYS}
 
 
+def refresh_default_provider(data_dir: str) -> bool:
+    """Refresh the live Agent Hub instance after Android settings are saved."""
+    global _ACTIVE_AGENT
+    if _ACTIVE_AGENT is not None and os.path.abspath(_ACTIVE_AGENT.data_dir) == os.path.abspath(data_dir):
+        _ACTIVE_AGENT._refresh_provider()
+        return True
+    return False
+
+
 class AgentHubAgent:
     def __init__(self, log=None, data_dir=None):
-        # Chaquopy's Java call is positional: AgentHubAgent(filesDir). Keep
-        # backward compatibility while still supporting AgentHubAgent(data_dir=...).
+        global _ACTIVE_AGENT
         if isinstance(log, str) and data_dir is None:
             data_dir, log = log, None
         self.task_queue = None
@@ -71,6 +72,7 @@ class AgentHubAgent:
         self._active_processes = {}
         self._state_lock = threading.Lock()
         self._refresh_provider()
+        _ACTIVE_AGENT = self
 
     def _refresh_provider(self) -> None:
         try:
@@ -110,14 +112,8 @@ class AgentHubAgent:
 
     def _redact(self, text: str) -> str:
         redacted = str(text)
-        secrets = set()
-        if self.provider is not None:
-            key = getattr(getattr(self.provider, "config", None), "api_key", "")
-            if key:
-                secrets.add(key)
-        for key in secrets:
-            redacted = redacted.replace(key, "[REDACTED]")
-        return redacted
+        key = getattr(getattr(self.provider, "config", None), "api_key", "") if self.provider else ""
+        return redacted.replace(key, "[REDACTED]") if key else redacted
 
     def _run_tests(self, workspace: ProjectWorkspace, commands: List[str], task_id: str = "") -> List[Dict]:
         results = []
@@ -130,10 +126,7 @@ class AgentHubAgent:
                 continue
             proc = None
             try:
-                proc = subprocess.Popen(
-                    command.split(), cwd=str(workspace.root), env=_safe_env(),
-                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                )
+                proc = subprocess.Popen(command.split(), cwd=str(workspace.root), env=_safe_env(), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
                 with self._state_lock:
                     self._active_processes[task_id] = proc
                 try:
@@ -142,8 +135,7 @@ class AgentHubAgent:
                     proc.kill()
                     output, _ = proc.communicate()
                     raise subprocess.TimeoutExpired(command, 120, output=output)
-                results.append({"command": command, "status": "passed" if proc.returncode == 0 else "failed",
-                                "exit_code": proc.returncode, "output": self._redact((output or "")[-4000:])})
+                results.append({"command": command, "status": "passed" if proc.returncode == 0 else "failed", "exit_code": proc.returncode, "output": self._redact((output or "")[-4000:])})
             except subprocess.TimeoutExpired as exc:
                 results.append({"command": command, "status": "error", "output": self._redact(str(exc))})
             except OSError as exc:
@@ -181,40 +173,27 @@ class AgentHubAgent:
             return
 
         task.status = "running"
-        cancel_event = threading.Event()
         with self._state_lock:
-            self._cancel_events[task.id] = cancel_event
+            self._cancel_events[task.id] = threading.Event()
         try:
             workspace = ProjectWorkspace(self.data_dir, project)
             snapshot = workspace.snapshot()
             self.log(f"Agent Hub planner: {project}")
             plan = self._call("planner", f"USER REQUEST:\n{prompt}\n\nWORKSPACE:\n{snapshot}", task.id)
-
             self.log("Agent Hub coder: implementing plan")
             coder = self._call("coder", f"REQUEST:\n{prompt}\n\nPLAN:\n{json.dumps(plan)}\n\nWORKSPACE:\n{snapshot}", task.id)
             changed = self._apply_coder_files(workspace, coder)
-
             after = workspace.snapshot()
             self.log("Agent Hub reviewer: checking implementation")
             review = self._call("reviewer", f"REQUEST:\n{prompt}\n\nPLAN:\n{json.dumps(plan)}\n\nCHANGED:\n{changed}\n\nWORKSPACE:\n{after}", task.id)
-
             self.log("Agent Hub tester: preparing and running tests")
             test_plan = self._call("tester", f"REQUEST:\n{prompt}\n\nREVIEW:\n{json.dumps(review)}\n\nWORKSPACE:\n{after}", task.id)
             test_results = self._run_tests(workspace, test_plan.get("commands", []), task.id)
             if self._cancelled(task.id):
                 raise RuntimeError("Agent Hub task cancelled")
-
             self.log("Agent Hub security: final review")
             security = self._call("security", f"REQUEST:\n{prompt}\n\nREVIEW:\n{json.dumps(review)}\n\nTEST RESULTS:\n{json.dumps(test_results)}\n\nWORKSPACE:\n{after}", task.id)
-
-            task.result = json.dumps({
-                "project": project,
-                "plan": plan,
-                "changed_files": changed,
-                "review": review,
-                "tests": test_results,
-                "security": security,
-            })
+            task.result = json.dumps({"project": project, "plan": plan, "changed_files": changed, "review": review, "tests": test_results, "security": security})
             task.status = "completed"
             task.completed_at = time.time()
             self.log("Agent Hub pipeline completed")
