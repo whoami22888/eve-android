@@ -15,8 +15,6 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var viewPager: ViewPager2
     private lateinit var tabLayout: TabLayout
-
-    /** Exposed so native Eve screens can use the already-running local runtime. */
     internal var eveService: EveService? = null
     private var serviceBound = false
 
@@ -36,25 +34,20 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
-
         viewPager = findViewById(R.id.viewPager)
         tabLayout = findViewById(R.id.tabLayout)
 
         val sections = listOf(
-            "Dashboard"      to DashboardFragment(),
-            "Agent Hub"      to AgentHubFragment(),
+            "Dashboard" to DashboardFragment(),
+            "Agent Hub" to AgentHubFragment(),
+            "AI Models" to ModelSettingsFragment(),
             "Agent Computer" to AgentComputerFragment(),
-            "Memory Editor"  to MemoryEditorFragment(),
-            "History"        to HistoryFragment(),
-            "Setup"          to SetupFragment()
+            "Memory Editor" to MemoryEditorFragment(),
+            "History" to HistoryFragment(),
+            "Setup" to SetupFragment()
         )
-
-        val adapter = SectionPagerAdapter(this, sections)
-        viewPager.adapter = adapter
-
-        TabLayoutMediator(tabLayout, viewPager) { tab, position ->
-            tab.text = sections[position].first
-        }.attach()
+        viewPager.adapter = SectionPagerAdapter(this, sections)
+        TabLayoutMediator(tabLayout, viewPager) { tab, position -> tab.text = sections[position].first }.attach()
 
         val serviceIntent = Intent(this, EveService::class.java)
         startForegroundService(serviceIntent)
@@ -62,16 +55,15 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
-        super.onDestroy()
         if (serviceBound) {
             unbindService(serviceConnection)
             serviceBound = false
         }
         currentService = null
+        super.onDestroy()
     }
 
     companion object {
-        @Volatile
-        internal var currentService: EveService? = null
+        @Volatile internal var currentService: EveService? = null
     }
 }
