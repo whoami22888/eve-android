@@ -1,19 +1,16 @@
-"""
-eve/hermes_agent.py
-===================
-HermesAgent — the HTTP command gateway.
-"""
+"""HermesAgent — authenticated local HTTP command gateway."""
 
 import logging
 import os
+import re
 import secrets
 import socket
+import uuid
 
 from flask import Flask, request, jsonify
 from .task_queue import Task, TaskQueue
 
 logger = logging.getLogger("EVE.HermesAgent")
-
 DEFAULT_PORT = 5001
 PORT_RANGE = range(DEFAULT_PORT, DEFAULT_PORT + 10)
 
@@ -21,10 +18,10 @@ _HACXGENT_ACTIONS = frozenset({
     "screenshot", "scan", "audit", "capture", "analyze",
     "click", "move_to", "typewrite", "execute_script", "http_get",
 })
-
 _HERMES_ACTIONS = frozenset({"status", "help", "list_agents"})
-_AGENT_HUB_ACTIONS = frozenset({"agent_hub"})
+_AGENT_HUB_ACTIONS = frozenset({"agent_hub", "agent_hub_control"})
 _ALLOWED_ACTIONS = _HACXGENT_ACTIONS | _HERMES_ACTIONS | _AGENT_HUB_ACTIONS
+_ID_RE = re.compile(r"^[a-f0-9]{16,64}$")
 
 
 def _route_action(action: str) -> str:
@@ -85,7 +82,7 @@ class HermesAgent:
             if not self._check_auth():
                 return jsonify({"error": "Unauthorized"}), 401
             data = request.get_json(force=True, silent=True) or {}
-            action = data.get("action", "").strip()
+            action = str(data.get("action", "")).strip()
             params = data.get("params", {})
             if not action:
                 return jsonify({"error": "Missing 'action' field"}), 400
@@ -95,8 +92,11 @@ class HermesAgent:
                 return jsonify({"error": "'params' must be a JSON object"}), 400
             if self.task_queue is None:
                 return jsonify({"error": "Task queue not initialised"}), 503
+            params = dict(params)
+            requested_id = str(params.pop("task_id", "")).strip().lower()
+            task_id = requested_id if _ID_RE.fullmatch(requested_id) else uuid.uuid4().hex
             target = _route_action(action)
-            task = Task(agent=target, action=action, params=params)
+            task = Task(agent=target, action=action, params=params, task_id=task_id)
             self.task_queue.put(task)
             return jsonify({"status": "accepted", "task_id": task.id, "routed_to": target, "port": self._port}), 202
 
@@ -112,14 +112,10 @@ class HermesAgent:
 
     def assign_task(self, task: Task) -> None:
         action = task.action.lower()
-        if action == "status":
-            task.result = "EVE is running"
-        elif action == "list_agents":
-            task.result = "hermes, agent_hub, hacxgent"
-        elif action == "help":
-            task.result = f"Allowed actions: {', '.join(sorted(_ALLOWED_ACTIONS))}"
-        else:
-            task.result = f"Unhandled meta action: {task.action}"
+        if action == "status": task.result = "EVE is running"
+        elif action == "list_agents": task.result = "hermes, agent_hub, hacxgent"
+        elif action == "help": task.result = f"Allowed actions: {', '.join(sorted(_ALLOWED_ACTIONS))}"
+        else: task.result = f"Unhandled meta action: {task.action}"
         task.status = "completed"
 
     def _persist_port(self) -> None:
