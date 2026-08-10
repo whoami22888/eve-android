@@ -37,17 +37,15 @@ class AgentHubFragment : Fragment() {
         fun add(label: String, action: () -> Unit) { controls.addView(Button(context).apply { text = label; setOnClickListener { action() } }) }
         add("RUN") {
             val task = taskInput.text.toString().trim(); val service = MainActivity.currentService
-            if (task.isEmpty() || service == null) {
-                statusText.text = if (service == null) "EVE runtime is not connected" else "Enter a task first"
-            } else {
-                val id = UUID.randomUUID().toString().replace("-", ""); activeTaskId = id; viewModel.registerPipeline(id, task)
-                service.submitTask("agent_hub", mapOf("task" to task, "project" to "default"), id)
-            }
+            if (task.isEmpty() || service == null) statusText.text = if (service == null) "EVE runtime is not connected" else "Enter a task first"
+            else { val id = UUID.randomUUID().toString().replace("-", ""); activeTaskId = id; viewModel.registerPipeline(id, task); service.submitTask("agent_hub", mapOf("task" to task, "project" to "default"), id) }
         }
-        add("PAUSE") { activeTaskId?.let { MainActivity.currentService?.controlPipeline(it, "pause") } }
-        add("RESUME") { activeTaskId?.let { MainActivity.currentService?.controlPipeline(it, "resume") } }
-        add("CANCEL") { activeTaskId?.let { MainActivity.currentService?.controlPipeline(it, "cancel") } }
-        add("RETRY") { activeTaskId?.let { MainActivity.currentService?.controlPipeline(it, "retry") } }
+        fun control(command: String) {
+            val id = activeTaskId ?: return
+            val run = viewModel.pipelineRuns.value?.firstOrNull { it.taskId == id }
+            MainActivity.currentService?.controlPipeline(id, command, run?.task.orEmpty(), run?.project ?: "default", run?.stage ?: "Plan")
+        }
+        add("PAUSE") { control("pause") }; add("RESUME") { control("resume") }; add("CANCEL") { control("cancel") }; add("RETRY") { control("retry") }
         root.addView(controls)
         root.addView(TextView(context).apply { text = "Pipeline history"; textSize = 16f; setTextColor(Color.WHITE); setPadding(0, 16, 0, 6) })
         val scroll = ScrollView(context); historyText = TextView(context).apply { text = "No pipeline runs yet."; textSize = 13f; setTextColor(Color.LTGRAY); setPadding(0, 8, 0, 16) }; scroll.addView(historyText); root.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
@@ -59,11 +57,7 @@ class AgentHubFragment : Fragment() {
         viewModel.pipelineRuns.observe(viewLifecycleOwner) { runs ->
             if (runs.isNotEmpty() && activeTaskId == null) activeTaskId = runs.first().taskId
             val active = runs.firstOrNull { it.taskId == activeTaskId } ?: runs.firstOrNull()
-            if (active != null) {
-                statusText.text = "${active.status.uppercase()} • ${active.message} • ${active.taskId.take(12)}"
-                progress.progress = active.progress
-                stageText.text = "Plan → Research → Code → Test → Review\nCurrent: ${active.stage}"
-            }
+            if (active != null) { statusText.text = "${active.status.uppercase()} • ${active.message} • ${active.taskId.take(12)}"; progress.progress = active.progress; stageText.text = "Plan → Research → Code → Test → Review\nCurrent: ${active.stage}" }
             historyText.text = runs.joinToString("\n\n") { r -> "${r.taskId}\n${r.status.uppercase()} • ${r.progress}% • ${r.stage}\n${r.message}${if (r.error.isNotBlank()) "\nError: ${r.error}" else ""}" }
         }
     }
