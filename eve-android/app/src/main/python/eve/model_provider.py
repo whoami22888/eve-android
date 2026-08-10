@@ -1,8 +1,9 @@
 """Model-provider abstraction for EVE Agent Hub.
 
 Supports OpenAI-compatible providers plus native Anthropic and Gemini APIs.
-Provider selection is read from EVE_DATA_DIR/model_config.json or environment
-variables. Secrets are supplied by the Android app and are never hard-coded.
+EVE can automatically select a model for each pipeline stage while keeping
+one provider configuration selected by the user. Secrets are supplied by the
+Android app and are never hard-coded.
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
-from typing import Dict
+from typing import Dict, Optional
 
 
 @dataclass
@@ -83,15 +84,41 @@ def _request_json(url: str, payload: dict, headers: dict, timeout: int) -> dict:
         raise ModelProviderError("Provider returned invalid JSON") from exc
 
 
+def _auto_model(provider: str, configured: str, stage: Optional[str]) -> str:
+    """Choose an appropriate model for an EVE pipeline stage.
+
+    A manually selected model always wins. With model='auto', EVE uses a
+    stronger model for implementation/review/security and a faster model for
+    planning/testing when the provider exposes those model families.
+    """
+    if configured and configured.lower() not in {"auto", "eve-auto", "automatic"}:
+        return configured
+    stage = (stage or "").lower()
+    if provider == "deepseek":
+        return "deepseek-v4-pro" if stage in {"coder", "reviewer", "security"} else "deepseek-v4-flash"
+    if provider == "openai":
+        return "gpt-5.1" if stage in {"coder", "reviewer", "security"} else "gpt-5-mini"
+    if provider == "gemini":
+        return "gemini-3.1-pro-preview" if stage in {"coder", "reviewer", "security"} else "gemini-3.6-flash"
+    if provider == "anthropic":
+        return "claude-opus-4-1" if stage in {"coder", "reviewer", "security"} else "claude-sonnet-4-5"
+    if provider == "openrouter":
+        return "deepseek/deepseek-v4-pro" if stage in {"coder", "reviewer", "security"} else "google/gemini-3.6-flash"
+    if provider == "ollama":
+        return "deepseek-v4-flash" if stage in {"coder", "reviewer", "security"} else "qwen3"
+    return configured
+
+
 class OpenAICompatibleProvider:
     """Client for OpenAI-compatible chat-completions endpoints."""
 
     def __init__(self, config: ModelConfig):
         self.config = config
 
-    def complete(self, system: str, user: str, temperature: float = 0.1) -> str:
+    def complete(self, system: str, user: str, temperature: float = 0.1, stage: Optional[str] = None) -> str:
+        model = _auto_model(self.config.provider, self.config.model, stage)
         payload = {
-            "model": self.config.model,
+            "model": model,
             "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
@@ -112,6 +139,9 @@ class OpenAICompatibleProvider:
         except (KeyError, IndexError, TypeError) as exc:
             raise ModelProviderError("OpenAI-compatible provider returned an unexpected response") from exc
 
+    def health_check(self) -> str:
+        return self.complete("Reply with exactly OK.", "Reply with exactly OK.", 0.0, "planner")
+
 
 class AnthropicProvider:
     """Native Anthropic Messages API client."""
@@ -119,27 +149,28 @@ class AnthropicProvider:
     def __init__(self, config: ModelConfig):
         self.config = config
 
-    def complete(self, system: str, user: str, temperature: float = 0.1) -> str:
+    def complete(self, system: str, user: str, temperature: float = 0.1, stage: Optional[str] = None) -> str:
         if not self.config.api_key:
             raise ModelProviderError("Anthropic requires an API key")
+        model = _auto_model("anthropic", self.config.model, stage)
         payload = {
-            "model": self.config.model,
+            "model": model,
             "max_tokens": 4096,
             "system": system,
             "messages": [{"role": "user", "content": user}],
             "temperature": temperature,
         }
         url = self.config.base_url.rstrip("/") + "/v1/messages"
-        headers = {
-            "x-api-key": self.config.api_key,
-            "anthropic-version": "2023-06-01",
-        }
+        headers = {"x-api-key": self.config.api_key, "anthropic-version": "2023-06-01"}
         data = _request_json(url, payload, headers, self.config.timeout_seconds)
         try:
             blocks = data["content"]
             return "\n".join(str(block["text"]) for block in blocks if isinstance(block, dict) and block.get("type") == "text")
         except (KeyError, TypeError) as exc:
             raise ModelProviderError("Anthropic returned an unexpected response") from exc
+
+    def health_check(self) -> str:
+        return self.complete("Reply with exactly OK.", "Reply with exactly OK.", 0.0, "planner")
 
 
 class GeminiProvider:
@@ -148,15 +179,18 @@ class GeminiProvider:
     def __init__(self, config: ModelConfig):
         self.config = config
 
-    def complete(self, system: str, user: str, temperature: float = 0.1) -> str:
+    def complete(self, system: str, user: str, temperature: float = 0.1, stage: Optional[str] = None) -> str:
         if not self.config.api_key:
             raise ModelProviderError("Gemini requires an API key")
+        model = _auto_model("gemini", self.config.model, stage)
         payload = {
             "systemInstruction": {"parts": [{"text": system}]},
             "contents": [{"role": "user", "parts": [{"text": user}]}],
-            "generationConfig": {"temperature": temperature},
         }
-        url = self.config.base_url.rstrip("/") + f"/v1beta/models/{urllib.parse.quote(self.config.model, safe='')}:generateContent"
+        # Gemini 3.x deprecates sampling controls; only send temperature for older models.
+        if not model.startswith("gemini-3."):
+            payload["generationConfig"] = {"temperature": temperature}
+        url = self.config.base_url.rstrip("/") + f"/v1beta/models/{urllib.parse.quote(model, safe='')}:generateContent"
         url += "?" + urllib.parse.urlencode({"key": self.config.api_key})
         data = _request_json(url, payload, {}, self.config.timeout_seconds)
         try:
@@ -164,6 +198,9 @@ class GeminiProvider:
             return "\n".join(str(part["text"]) for part in parts if isinstance(part, dict) and "text" in part)
         except (KeyError, IndexError, TypeError) as exc:
             raise ModelProviderError("Gemini returned an unexpected response") from exc
+
+    def health_check(self) -> str:
+        return self.complete("Reply with exactly OK.", "Reply with exactly OK.", 0.0, "planner")
 
 
 def build_provider(data_dir: str):
