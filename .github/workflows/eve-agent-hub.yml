@@ -24,6 +24,8 @@ jobs:
     defaults:
       run:
         working-directory: eve-android
+    env:
+      PYTHON_BIN: python3.11
     steps:
       - uses: actions/checkout@v4
       - name: Set up JDK 17
@@ -37,7 +39,9 @@ jobs:
           python-version: '3.11'
           check-latest: true
       - name: Verify Python executable
-        run: python3.11 --version
+        run: |
+          python3.11 --version
+          python3.11 -c "import sys; print(sys.executable)"
       - name: Set up Gradle cache
         uses: actions/cache@v4
         with:
