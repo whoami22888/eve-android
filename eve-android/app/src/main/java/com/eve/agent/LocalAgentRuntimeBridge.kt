@@ -4,6 +4,7 @@ import android.content.Context
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
@@ -23,6 +24,7 @@ class LocalAgentRuntimeBridge(context: Context) {
         val lastMessage: String = "Starting local agent runtime…"
     )
 
+    @Suppress("UNUSED_VARIABLE")
     private val appContext = context.applicationContext
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val _state = MutableStateFlow(RuntimeState())
@@ -48,13 +50,10 @@ class LocalAgentRuntimeBridge(context: Context) {
     }
 
     fun stopPipeline() {
-        // The current EVE service owns the Python orchestrator lifecycle.
-        // Stop here means stop accepting new Agent Hub work; the existing
-        // service remains alive so normal EVE features are unaffected.
         _state.value = _state.value.copy(lastMessage = "Agent Hub paused")
     }
 
     fun dispose() {
-        scope.coroutineContext.cancel()
+        scope.cancel()
     }
 }
