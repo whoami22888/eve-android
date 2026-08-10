@@ -16,17 +16,19 @@ class MainActivity : AppCompatActivity() {
     private lateinit var viewPager: ViewPager2
     private lateinit var tabLayout: TabLayout
 
-    /** Exposed as `internal` so Fragments can call [EveService.submitTask]. */
+    /** Exposed so native Eve screens can use the already-running local runtime. */
     internal var eveService: EveService? = null
     private var serviceBound = false
 
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
             eveService = (binder as EveService.LocalBinder).getService()
+            currentService = eveService
             serviceBound = true
         }
         override fun onServiceDisconnected(name: ComponentName?) {
             eveService = null
+            currentService = null
             serviceBound = false
         }
     }
@@ -40,6 +42,7 @@ class MainActivity : AppCompatActivity() {
 
         val sections = listOf(
             "Dashboard"      to DashboardFragment(),
+            "Agent Hub"      to AgentHubFragment(),
             "Agent Computer" to AgentComputerFragment(),
             "Memory Editor"  to MemoryEditorFragment(),
             "History"        to HistoryFragment(),
@@ -53,7 +56,6 @@ class MainActivity : AppCompatActivity() {
             tab.text = sections[position].first
         }.attach()
 
-        // Start and bind the background orchestrator service
         val serviceIntent = Intent(this, EveService::class.java)
         startForegroundService(serviceIntent)
         bindService(serviceIntent, serviceConnection, Context.BIND_AUTO_CREATE)
@@ -65,5 +67,11 @@ class MainActivity : AppCompatActivity() {
             unbindService(serviceConnection)
             serviceBound = false
         }
+        currentService = null
+    }
+
+    companion object {
+        @Volatile
+        internal var currentService: EveService? = null
     }
 }
