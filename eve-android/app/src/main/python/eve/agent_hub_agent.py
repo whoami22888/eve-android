@@ -50,9 +50,13 @@ class AgentHubAgent:
         self.log = log or (lambda message, level="INFO": None)
         self.data_dir = data_dir or os.environ.get("EVE_DATA_DIR") or "."
         self.provider = None
+        self._refresh_provider()
+
+    def _refresh_provider(self) -> None:
         try:
             self.provider = build_provider(self.data_dir)
         except ModelProviderError as exc:
+            self.provider = None
             self.log(f"Model provider not configured: {exc}", "WARN")
 
     def set_task_queue(self, q):
@@ -62,6 +66,7 @@ class AgentHubAgent:
         return task.action == "agent_hub"
 
     def _call(self, stage: str, user: str) -> Dict:
+        self._refresh_provider()
         if self.provider is None:
             raise ModelProviderError("Configure the model provider before running Agent Hub")
         self.log(f"Agent Hub: {stage} calling model (EVE routing)")
