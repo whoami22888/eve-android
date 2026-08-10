@@ -1,6 +1,5 @@
 import json
 import os
-import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -120,7 +119,7 @@ class ProviderTests(unittest.TestCase):
             task = Task("agent_hub", "agent_hub", {"task": "x", "project": "../escape"})
             agent.assign_task(task)
             self.assertEqual(task.status, "failed")
-            self.assertIn("workspace", task.error.lower())
+            self.assertIn("invalid project", task.error.lower())
 
 
 if __name__ == "__main__":
