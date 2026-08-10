@@ -9,7 +9,6 @@ import android.os.Binder
 import android.os.Build
 import android.os.IBinder
 import android.provider.Settings
-import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.chaquo.python.Python
 import com.chaquo.python.PyObject
@@ -21,8 +20,6 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.io.File
 import java.util.concurrent.TimeUnit
-
-private const val TAG = "EveService"
 
 class EveService : Service() {
     private lateinit var eveInstance: PyObject
@@ -56,6 +53,7 @@ class EveService : Service() {
 
     private fun applyModelProviderEnvironment(env: PyObject) {
         val config = ModelProviderStore(this).load()
+        env.__setitem__("EVE_MODEL_PROVIDER", config.provider)
         env.__setitem__("EVE_MODEL_BASE_URL", config.baseUrl)
         env.__setitem__("EVE_MODEL_NAME", config.model)
         env.__setitem__("EVE_MODEL_API_KEY", config.apiKey)
@@ -88,10 +86,11 @@ class EveService : Service() {
                 val env = py.getModule("os").callAttr("environ")
                 applyModelProviderEnvironment(env)
                 val config = ModelProviderStore(this).load()
-                if (config.baseUrl.isBlank() || config.model.isBlank()) { callback("Enter a base URL and model first."); return@Thread }
+                if (config.model.isBlank()) { callback("EVE needs a model selection. Choose Auto or a model first."); return@Thread }
+                if (config.provider != "ollama" && config.apiKey.isBlank()) { callback("${config.provider} requires an API key. Add it in AI Models."); return@Thread }
                 val provider = py.getModule("eve.model_provider").callAttr("build_provider", filesDir.absolutePath)
-                val result = provider.callAttr("complete", "Reply with exactly OK.", "Reply with exactly OK.", 0.0).toString()
-                callback("Provider connected: $result")
+                val result = provider.callAttr("health_check").toString().trim()
+                callback(if (result.equals("OK", true)) "✓ ${config.provider} connected — ${config.model}" else "✓ ${config.provider} responded: $result")
             } catch (e: Exception) { callback("Provider test failed: ${e.message ?: "unknown error"}") }
         }.start()
     }
