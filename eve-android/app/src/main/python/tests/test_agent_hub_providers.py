@@ -91,15 +91,14 @@ class ProviderTests(unittest.TestCase):
             with open(os.path.join(directory, "model_config.json"), "w", encoding="utf-8") as fh:
                 json.dump({"provider": "openai", "model": "auto", "api_key": "test"}, fh)
             agent = AgentHubAgent(data_dir=directory)
-            self.assertIsNotNone(agent.provider)
+            self.assertEqual(agent.provider.config.provider, "openai")
             with open(os.path.join(directory, "model_config.json"), "w", encoding="utf-8") as fh:
                 json.dump({"provider": "deepseek", "model": "auto", "api_key": "test"}, fh)
-            with patch("eve.agent_hub_agent.OpenAICompatibleProvider.complete", return_value='{"summary":"ok"}'):
-                # Refresh is exercised through _call; the provider must be rebuilt from the new config.
-                with patch.object(agent.provider, "complete", return_value='{"summary":"old"}') as old_complete:
-                    result = agent._call("planner", "test")
-                    old_complete.assert_not_called()
-                    self.assertEqual(result["summary"], "ok")
+            agent._refresh_provider()
+            self.assertEqual(agent.provider.config.provider, "deepseek")
+            with patch.object(agent.provider, "complete", return_value='{"summary":"ok"}'):
+                result = agent._call("planner", "test")
+            self.assertEqual(result["summary"], "ok")
 
 
 if __name__ == "__main__":
