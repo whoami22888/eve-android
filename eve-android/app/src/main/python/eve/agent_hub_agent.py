@@ -1,4 +1,10 @@
-"""Model-backed five-stage Agent Hub pipeline."""
+"""Model-backed, bounded five-stage Agent Hub pipeline.
+
+The Android service submits work to EVE; Agent Hub immediately hands pipeline
+execution to a bounded executor so the orchestrator remains responsive. Each
+pipeline emits explicit lifecycle events and supports pause/resume/cancel and
+retry of the failed stage.
+"""
 
 from __future__ import annotations
 
@@ -8,20 +14,28 @@ import re
 import subprocess
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List
 
 from .model_provider import ModelProviderError, build_provider
 from .task_queue import Task
 from .workspace import ProjectWorkspace, WorkspaceError
 
-STAGES = ("planner", "coder", "reviewer", "tester", "security")
+STAGES = ("planner", "researcher", "coder", "tester", "reviewer")
+_STAGE_LABELS = {
+    "planner": "Plan",
+    "researcher": "Research",
+    "coder": "Code",
+    "tester": "Test",
+    "reviewer": "Review",
+}
 
 _SYSTEM = {
     "planner": """You are EVE Planner. Turn the user's request into a precise implementation plan. Return JSON with keys: summary, steps (array), files_to_change (array). Do not invent files when the workspace snapshot is provided.""",
-    "coder": """You are EVE Coder. Implement the requested plan. Return JSON with keys: summary, files (array of {path, content}), notes. Only return complete UTF-8 text for files that should be created or replaced. Never use paths outside the project workspace.""",
-    "reviewer": """You are EVE Reviewer. Review the proposed implementation against the plan and workspace. Return JSON with keys: approved (boolean), findings (array), required_changes (array). Do not modify files.""",
-    "tester": """You are EVE Tester. Assess whether the implementation is testable and provide safe test commands. Return JSON with keys: tests (array), commands (array), findings (array). Commands must be common project test commands, not destructive shell operations.""",
-    "security": """You are EVE Security Reviewer. Inspect the implementation for credential leaks, unsafe path handling, dependency risks, injection problems and insecure network behavior. Return JSON with keys: approved (boolean), severity, findings (array), fixes (array). Do not modify files.""",
+    "researcher": """You are EVE Researcher. Inspect the supplied workspace and plan, identify relevant existing implementations, compatibility constraints, dependencies and likely test requirements. Return JSON with keys: findings (array), constraints (array), recommendations (array). Do not modify files.""",
+    "coder": """You are EVE Coder. Implement the requested plan using the research. Return JSON with keys: summary, files (array of {path, content}), notes. Only return complete UTF-8 text for files that should be created or replaced. Never use paths outside the project workspace.""",
+    "tester": """You are EVE Tester. Assess the implementation and provide safe test commands. Return JSON with keys: tests (array), commands (array), findings (array). Commands must be common project test commands, not destructive shell operations.""",
+    "reviewer": """You are EVE Reviewer. Review the implementation, test results and security implications. Return JSON with keys: approved (boolean), severity, findings (array), required_changes (array). Do not modify files.""",
 }
 
 _ALLOWED_TEST_COMMANDS = (
@@ -51,7 +65,6 @@ def _safe_env() -> Dict[str, str]:
 
 
 def refresh_default_provider(data_dir: str) -> bool:
-    """Refresh the live Agent Hub instance after Android settings are saved."""
     global _ACTIVE_AGENT
     if _ACTIVE_AGENT is not None and os.path.abspath(_ACTIVE_AGENT.data_dir) == os.path.abspath(data_dir):
         _ACTIVE_AGENT._refresh_provider()
@@ -69,8 +82,13 @@ class AgentHubAgent:
         self.data_dir = data_dir or os.environ.get("EVE_DATA_DIR") or "."
         self.provider = None
         self._cancel_events = {}
+        self._pause_events = {}
         self._active_processes = {}
+        self._task_objects = {}
+        self._task_specs = {}
+        self._task_stage = {}
         self._state_lock = threading.Lock()
+        self._executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="eve-agent-hub")
         self._refresh_provider()
         _ACTIVE_AGENT = self
 
@@ -85,14 +103,38 @@ class AgentHubAgent:
         self.task_queue = q
 
     def can_handle(self, task: Task) -> bool:
-        return task.action in {"agent_hub", "agent_hub_cancel"}
+        return task.action in {"agent_hub", "agent_hub_control"}
+
+    def _emit_stage(self, task_id: str, stage: str, status: str, progress: int, message: str = "") -> None:
+        self._task_stage[task_id] = stage
+        self.log(f"Agent Hub [{_STAGE_LABELS.get(stage, stage)}] {status}: {message}".strip())
+        try:
+            from java import jclass
+            jclass("com.eve.agent.EveKotlinBridge").onPipelineStage(
+                task_id, _STAGE_LABELS.get(stage, stage), status, int(progress), message
+            )
+        except Exception:
+            pass
 
     def _cancelled(self, task_id: str) -> bool:
         with self._state_lock:
             event = self._cancel_events.get(task_id)
             return event.is_set() if event else False
 
+    def _wait_if_paused(self, task_id: str) -> None:
+        while True:
+            with self._state_lock:
+                pause = self._pause_events.get(task_id)
+                cancelled = self._cancel_events.get(task_id)
+            if cancelled and cancelled.is_set():
+                raise RuntimeError("Agent Hub task cancelled")
+            if pause is None or not pause.is_set():
+                return
+            self._emit_stage(task_id, self._task_stage.get(task_id, "planner"), "paused", 0, "Pipeline paused")
+            time.sleep(0.2)
+
     def _call(self, stage: str, user: str, task_id: str = "") -> Dict:
+        self._wait_if_paused(task_id)
         if task_id and self._cancelled(task_id):
             raise RuntimeError("Agent Hub task cancelled")
         self._refresh_provider()
@@ -103,7 +145,8 @@ class AgentHubAgent:
 
     def _apply_coder_files(self, workspace: ProjectWorkspace, result: Dict) -> List[str]:
         changed = []
-        for item in result.get("files", []) if isinstance(result.get("files", []), list) else []:
+        files = result.get("files", []) if isinstance(result.get("files", []), list) else []
+        for item in files:
             if not isinstance(item, dict) or not item.get("path") or not isinstance(item.get("content"), str):
                 continue
             workspace.write(str(item["path"]), item["content"])
@@ -112,12 +155,22 @@ class AgentHubAgent:
 
     def _redact(self, text: str) -> str:
         redacted = str(text)
-        key = getattr(getattr(self.provider, "config", None), "api_key", "") if self.provider else ""
-        return redacted.replace(key, "[REDACTED]") if key else redacted
+        secrets = set()
+        if self.provider:
+            key = getattr(getattr(self.provider, "config", None), "api_key", "")
+            if key:
+                secrets.add(key)
+        for name, value in os.environ.items():
+            if any(token in name.upper() for token in ("KEY", "TOKEN", "SECRET", "PASSWORD")) and value:
+                secrets.add(value)
+        for secret in sorted(secrets, key=len, reverse=True):
+            redacted = redacted.replace(secret, "[REDACTED]")
+        return redacted
 
     def _run_tests(self, workspace: ProjectWorkspace, commands: List[str], task_id: str = "") -> List[Dict]:
         results = []
         for command in commands[:3]:
+            self._wait_if_paused(task_id)
             if self._cancelled(task_id):
                 results.append({"command": command, "status": "cancelled"})
                 break
@@ -145,24 +198,45 @@ class AgentHubAgent:
                     self._active_processes.pop(task_id, None)
         return results
 
-    def _cancel_all(self) -> None:
+    def _control(self, task: Task) -> None:
+        target = str(task.params.get("task_id", "")).strip()
+        command = str(task.params.get("command", "")).strip().lower()
         with self._state_lock:
-            events = list(self._cancel_events.values())
-            processes = list(self._active_processes.values())
-        for event in events:
-            event.set()
-        for process in processes:
-            try:
-                process.kill()
-            except OSError:
-                pass
+            pause = self._pause_events.get(target)
+            cancel = self._cancel_events.get(target)
+            target_task = self._task_objects.get(target)
+        if command == "pause" and pause:
+            pause.set()
+            task.result = f"Paused {target}"
+        elif command == "resume" and pause:
+            pause.clear()
+            task.result = f"Resumed {target}"
+        elif command == "cancel" and cancel:
+            cancel.set()
+            with self._state_lock:
+                proc = self._active_processes.get(target)
+            if proc:
+                try:
+                    proc.kill()
+                except OSError:
+                    pass
+            task.result = f"Cancellation requested for {target}"
+        elif command == "retry" and target_task and target_task.status == "failed":
+            with self._state_lock:
+                self._cancel_events[target] = threading.Event()
+                self._pause_events[target] = threading.Event()
+            target_task.status = "running"
+            self._executor.submit(self._execute_pipeline, target_task, self._task_specs.get(target, {}), self._task_stage.get(target, "planner"))
+            task.result = f"Retry started for {target}"
+        else:
+            task.status = "failed"
+            task.error = f"Unknown or unavailable Agent Hub control: {command}"
+            return
+        task.status = "completed"
 
     def assign_task(self, task: Task) -> None:
-        if task.action == "agent_hub_cancel":
-            self._cancel_all()
-            task.status = "completed"
-            task.result = "Agent Hub cancellation requested"
-            task.completed_at = time.time()
+        if task.action == "agent_hub_control":
+            self._control(task)
             return
 
         prompt = str(task.params.get("task", "")).strip()
@@ -171,39 +245,58 @@ class AgentHubAgent:
             task.status = "failed"
             task.error = "Agent Hub task is empty"
             return
-
-        task.status = "running"
+        task.status = "queued"
         with self._state_lock:
             self._cancel_events[task.id] = threading.Event()
+            self._pause_events[task.id] = threading.Event()
+            self._task_objects[task.id] = task
+            self._task_specs[task.id] = {"prompt": prompt, "project": project}
+        self._emit_stage(task.id, "planner", "queued", 0, "Pipeline queued")
+        self._executor.submit(self._execute_pipeline, task, {"prompt": prompt, "project": project}, "planner")
+
+    def _execute_pipeline(self, task: Task, spec: Dict, start_stage: str = "planner") -> None:
+        prompt = str(spec.get("prompt", "")).strip()
+        project = str(spec.get("project", "default")).strip() or "default"
+        task.status = "running"
+        stage_index = {name: i for i, name in enumerate(STAGES)}
+        start = stage_index.get(start_stage, 0)
         try:
             workspace = ProjectWorkspace(self.data_dir, project)
             snapshot = workspace.snapshot()
-            self.log(f"Agent Hub planner: {project}")
-            plan = self._call("planner", f"USER REQUEST:\n{prompt}\n\nWORKSPACE:\n{snapshot}", task.id)
-            self.log("Agent Hub coder: implementing plan")
-            coder = self._call("coder", f"REQUEST:\n{prompt}\n\nPLAN:\n{json.dumps(plan)}\n\nWORKSPACE:\n{snapshot}", task.id)
-            changed = self._apply_coder_files(workspace, coder)
-            after = workspace.snapshot()
-            self.log("Agent Hub reviewer: checking implementation")
-            review = self._call("reviewer", f"REQUEST:\n{prompt}\n\nPLAN:\n{json.dumps(plan)}\n\nCHANGED:\n{changed}\n\nWORKSPACE:\n{after}", task.id)
-            self.log("Agent Hub tester: preparing and running tests")
-            test_plan = self._call("tester", f"REQUEST:\n{prompt}\n\nREVIEW:\n{json.dumps(review)}\n\nWORKSPACE:\n{after}", task.id)
-            test_results = self._run_tests(workspace, test_plan.get("commands", []), task.id)
+            context: Dict = {}
+            if start <= 0:
+                self._emit_stage(task.id, "planner", "running", 10, "Building implementation plan")
+                context["plan"] = self._call("planner", f"USER REQUEST:\n{prompt}\n\nWORKSPACE:\n{snapshot}", task.id)
+            if start <= 1:
+                self._emit_stage(task.id, "researcher", "running", 25, "Inspecting workspace and compatibility")
+                context["research"] = self._call("researcher", f"REQUEST:\n{prompt}\n\nPLAN:\n{json.dumps(context.get('plan', {}))}\n\nWORKSPACE:\n{snapshot}", task.id)
+            if start <= 2:
+                self._emit_stage(task.id, "coder", "running", 45, "Implementing planned changes")
+                context["coder"] = self._call("coder", f"REQUEST:\n{prompt}\n\nPLAN:\n{json.dumps(context.get('plan', {}))}\n\nRESEARCH:\n{json.dumps(context.get('research', {}))}\n\nWORKSPACE:\n{snapshot}", task.id)
+                context["changed"] = self._apply_coder_files(workspace, context["coder"])
+                snapshot = workspace.snapshot()
+            if start <= 3:
+                self._emit_stage(task.id, "tester", "running", 65, "Preparing and running safe tests")
+                test_plan = self._call("tester", f"REQUEST:\n{prompt}\n\nCHANGED:\n{context.get('changed', [])}\n\nWORKSPACE:\n{snapshot}", task.id)
+                context["tests"] = self._run_tests(workspace, test_plan.get("commands", []), task.id)
+            if start <= 4:
+                self._emit_stage(task.id, "reviewer", "running", 85, "Final implementation and security review")
+                context["review"] = self._call("reviewer", f"REQUEST:\n{prompt}\n\nCHANGED:\n{context.get('changed', [])}\n\nTEST RESULTS:\n{json.dumps(context.get('tests', []))}\n\nWORKSPACE:\n{snapshot}", task.id)
             if self._cancelled(task.id):
                 raise RuntimeError("Agent Hub task cancelled")
-            self.log("Agent Hub security: final review")
-            security = self._call("security", f"REQUEST:\n{prompt}\n\nREVIEW:\n{json.dumps(review)}\n\nTEST RESULTS:\n{json.dumps(test_results)}\n\nWORKSPACE:\n{after}", task.id)
-            task.result = json.dumps({"project": project, "plan": plan, "changed_files": changed, "review": review, "tests": test_results, "security": security})
+            task.result = self._redact(json.dumps({"project": project, "stages": context}, ensure_ascii=False))
             task.status = "completed"
             task.completed_at = time.time()
-            self.log("Agent Hub pipeline completed")
+            self._emit_stage(task.id, "reviewer", "completed", 100, "Pipeline completed")
         except (ModelProviderError, WorkspaceError, OSError, ValueError, RuntimeError) as exc:
             task.status = "failed"
-            task.error = str(exc)
-            self.log(f"Agent Hub failed: {exc}", "ERROR")
+            task.error = self._redact(str(exc))
+            self._emit_stage(task.id, self._task_stage.get(task.id, start_stage), "failed", max(1, stage_index.get(self._task_stage.get(task.id, start_stage), 0) * 20), task.error)
+            self.log(f"Agent Hub failed: {task.error}", "ERROR")
         finally:
             with self._state_lock:
                 self._cancel_events.pop(task.id, None)
+                self._pause_events.pop(task.id, None)
                 self._active_processes.pop(task.id, None)
 
     def run(self) -> None:
