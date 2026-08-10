@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent" android:layout_height="match_parent">
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:orientation="vertical" android:padding="20dp">
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:text="AI Models" android:textSize="28sp" android:textStyle="bold" />
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:layout_marginTop="8dp" android:text="Configure the model used by Eve's multi-agent workspace. Credentials are stored encrypted in Android Keystore-backed app storage." />
+        <com.google.android.material.textfield.TextInputLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="20dp">
+            <com.google.android.material.textfield.TextInputEditText android:id="@+id/provider" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="Provider (e.g. OpenAI-compatible)" />
+        </com.google.android.material.textfield.TextInputLayout>
+        <com.google.android.material.textfield.TextInputLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp">
+            <com.google.android.material.textfield.TextInputEditText android:id="@+id/baseUrl" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="Base URL (e.g. https://api.openai.com)" android:inputType="textUri" />
+        </com.google.android.material.textfield.TextInputLayout>
+        <com.google.android.material.textfield.TextInputLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp">
+            <com.google.android.material.textfield.TextInputEditText android:id="@+id/model" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="Model name" />
+        </com.google.android.material.textfield.TextInputLayout>
+        <com.google.android.material.textfield.TextInputLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp" android:hint="API key">
+            <com.google.android.material.textfield.TextInputEditText android:id="@+id/apiKey" android:layout_width="match_parent" android:layout_height="wrap_content" android:inputType="textPassword" />
+        </com.google.android.material.textfield.TextInputLayout>
+        <com.google.android.material.textfield.TextInputLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp">
+            <com.google.android.material.textfield.TextInputEditText android:id="@+id/timeout" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="Timeout seconds (10–600)" android:inputType="number" />
+        </com.google.android.material.textfield.TextInputLayout>
+        <Button android:id="@+id/saveModel" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="20dp" android:text="Save AI Model" />
+        <Button android:id="@+id/testModel" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="Test Connection" />
+        <Button android:id="@+id/clearKey" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="Clear Stored API Key" />
+        <TextView android:id="@+id/status" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="16dp" />
+    </LinearLayout>
+</ScrollView>
