@@ -12,10 +12,14 @@ jobs:
       run:
         working-directory: eve-android/app/src/main/python
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
-          python-version: '3.11'
+          python-version: '3.11.15'
+      - name: Install Python runtime dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements.txt
+      - name: Compile Python sources
+        run: python -m compileall -q eve
       - name: Run provider and routing tests
         run: python -m unittest discover -s tests -p 'test_*.py' -v
 
@@ -27,23 +31,24 @@ jobs:
     env:
       PYTHON_BIN: python3.11
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Set up JDK 17
         uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
       - name: Set up Python 3.11
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
-          python-version: '3.11'
-          check-latest: true
+          python-version: '3.11.15'
       - name: Verify Python executable
         run: |
           python3.11 --version
           python3.11 -c "import sys; print(sys.executable)"
+      - name: Verify Chaquopy requirements path
+        run: test -f app/src/main/python/requirements.txt
       - name: Set up Gradle cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.gradle/caches
