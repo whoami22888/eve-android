@@ -55,7 +55,7 @@ class EveService : Service() {
 
         val hermes = py.getModule("eve.hermes_agent").callAttr("HermesAgent").call(filesDir.absolutePath)
         val hacxgent = py.getModule("eve.hacxgent_agent").callAttr("HacxgentAgent").call()
-        val agentHub = py.getModule("eve.agent_hub_agent").callAttr("AgentHubAgent")
+        val agentHub = py.getModule("eve.agent_hub_agent").callAttr("AgentHubAgent").call(null, filesDir.absolutePath)
 
         eveInstance.callAttr("register_agent", "hermes", hermes)
         eveInstance.callAttr("register_agent", "agent_hub", agentHub)
@@ -77,7 +77,7 @@ class EveService : Service() {
         super.onDestroy()
     }
 
-    override fun onBind(intent: Intent?): IBinder = LocalBinder()
+    override fun onBind(intent: Intent): IBinder = LocalBinder()
 
     inner class LocalBinder : Binder() {
         fun getService(): EveService = this@EveService
