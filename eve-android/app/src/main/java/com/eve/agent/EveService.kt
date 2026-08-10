@@ -9,7 +9,6 @@ import android.os.Binder
 import android.os.Build
 import android.os.IBinder
 import android.provider.Settings
-import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.chaquo.python.Python
 import com.chaquo.python.PyObject
@@ -20,199 +19,83 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.io.File
+import java.util.UUID
 import java.util.concurrent.TimeUnit
 
-private const val TAG = "EveService"
-
-/**
- * EveService is a long-running foreground service that:
- *  - Starts the Chaquopy Python runtime
- *  - Instantiates the EVE orchestrator and its agents (Hermes, Hacxgent)
- *  - Exposes a [LocalBinder] so MainActivity / Fragments can submit tasks
- *    and query status without going through the network
- */
 class EveService : Service() {
-
     private lateinit var eveInstance: PyObject
     private lateinit var crashReporter: CrashReporter
-
-    private val okHttp = OkHttpClient.Builder()
-        .connectTimeout(5, TimeUnit.SECONDS)
-        .readTimeout(10, TimeUnit.SECONDS)
-        .build()
-
-    // ── Lifecycle ─────────────────────────────────────────────────────────────
+    private val okHttp = OkHttpClient.Builder().connectTimeout(5, TimeUnit.SECONDS).readTimeout(10, TimeUnit.SECONDS).build()
 
     override fun onCreate() {
-        super.onCreate()
-
-        crashReporter = CrashReporter(applicationContext)
-        installUncaughtExceptionHandler()
-
-        startForeground(NOTIFICATION_ID, buildNotification())
-
-        // *** MUST happen before any Python module is loaded ***
-        // android_computer.py calls VirtualComputer.getInstance() at import
-        // time, so the singleton must exist before we start the Python runtime.
+        super.onCreate(); crashReporter = CrashReporter(applicationContext); installUncaughtExceptionHandler(); startForeground(NOTIFICATION_ID, buildNotification())
         VirtualComputer.init(applicationContext)
-
-        // Prompt user to enable the accessibility service if not yet active.
-        if (!isAccessibilityServiceEnabled()) {
-            val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            startActivity(intent)
-        }
-
-        // Boot Python runtime
-        if (!Python.isStarted()) {
-            Python.start(AndroidPlatform(this))
-        }
-        val py = Python.getInstance()
-
-        // Expose the app's private files directory to Python so agents can
-        // store data without hardcoding paths (filesDir differs across users
-        // and profile IDs on multi-user Android devices).
-        val osModule = py.getModule("os")
-        osModule.callAttr("environ").__setitem__(
-            "EVE_DATA_DIR", filesDir.absolutePath
-        )
-
-        // Instantiate EVE orchestrator
-        val eveModule = py.getModule("eve.orchestrator")
-        eveInstance = eveModule.callAttr("EVE")
-
-        // Instantiate agents — pass the data dir so Hermes can persist its token
-        val hermes   = py.getModule("eve.hermes_agent").callAttr("HermesAgent")
-            .call(filesDir.absolutePath)
+        if (!isAccessibilityServiceEnabled()) startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        if (!Python.isStarted()) Python.start(AndroidPlatform(this))
+        val py = Python.getInstance(); val env = requireNotNull(py.getModule("os").get("environ")) { "Python os.environ is unavailable" }
+        env.callAttr("__setitem__", "EVE_DATA_DIR", filesDir.absolutePath); applyModelProviderEnvironment(env)
+        val eveModule = py.getModule("eve.orchestrator"); eveInstance = eveModule.callAttr("EVE")
+        val hermes = py.getModule("eve.hermes_agent").callAttr("HermesAgent").call(filesDir.absolutePath)
         val hacxgent = py.getModule("eve.hacxgent_agent").callAttr("HacxgentAgent").call()
-
-        eveInstance.callAttr("register_agent", "hermes", hermes)
-        eveInstance.callAttr("register_agent", "hacxgent", hacxgent)
-
-        // Log lines flow: Python orchestrator → EveKotlinBridge.onLogLine()
-        //                  → EveEventBus → EveViewModel → DashboardFragment
-        // (No extra wiring needed here — EveKotlinBridge is called directly
-        //  from orchestrator.py via Chaquopy's jclass bridge.)
-
-        // Run the orchestrator loop on a background thread
-        Thread({ eveInstance.callAttr("run") }, "eve-orchestrator").apply {
-            isDaemon = true
-            start()
-        }
-
-        // Broadcast initial status so the Dashboard can show "running"
-        EveEventBus.emit(EveEvent.StatusChanged("EVE is running"))
+        val agentHub = py.getModule("eve.agent_hub_agent").callAttr("AgentHubAgent").call(filesDir.absolutePath)
+        eveInstance.callAttr("register_agent", "hermes", hermes); eveInstance.callAttr("register_agent", "agent_hub", agentHub); eveInstance.callAttr("register_agent", "hacxgent", hacxgent)
+        Thread({ eveInstance.callAttr("run") }, "eve-orchestrator").apply { isDaemon = true; start() }
+        EveEventBus.emit(EveEvent.StatusChanged("EVE is running — Agent Hub ready"))
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int =
-        START_STICKY
-
-    override fun onDestroy() {
-        super.onDestroy()
-        try { eveInstance.callAttr("stop") } catch (_: Exception) {}
-        EveEventBus.emit(EveEvent.StatusChanged("EVE stopped"))
+    fun refreshModelProvider() {
+        Thread {
+            try {
+                val py = if (!Python.isStarted()) { Python.start(AndroidPlatform(this)); Python.getInstance() } else Python.getInstance()
+                val env = requireNotNull(py.getModule("os").get("environ")) { "Python os.environ is unavailable" }; applyModelProviderEnvironment(env)
+                py.getModule("eve.agent_hub_agent").callAttr("refresh_default_provider", filesDir.absolutePath); EveEventBus.emit(EveEvent.StatusChanged("AI model settings applied"))
+            } catch (e: Exception) { EveEventBus.emit(EveEvent.LogLine("Could not refresh AI model settings: ${e.message}", "ERROR")) }
+        }.start()
     }
 
-    // ── Binding ───────────────────────────────────────────────────────────────
-
-    override fun onBind(intent: Intent?): IBinder = LocalBinder()
-
-    inner class LocalBinder : Binder() {
-        fun getService(): EveService = this@EveService
+    private fun applyModelProviderEnvironment(env: PyObject) {
+        val config = ModelProviderStore(this).load()
+        env.callAttr("__setitem__", "EVE_MODEL_PROVIDER", config.provider); env.callAttr("__setitem__", "EVE_MODEL_BASE_URL", config.baseUrl); env.callAttr("__setitem__", "EVE_MODEL_NAME", config.model); env.callAttr("__setitem__", "EVE_MODEL_API_KEY", config.apiKey); env.callAttr("__setitem__", "EVE_MODEL_TIMEOUT", config.timeoutSeconds.toString())
     }
 
-    // ── Task submission ───────────────────────────────────────────────────────
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
+    override fun onDestroy() { try { eveInstance.callAttr("stop") } catch (_: Exception) {}; EveEventBus.emit(EveEvent.StatusChanged("EVE stopped")); super.onDestroy() }
+    override fun onBind(intent: Intent): IBinder = LocalBinder()
+    inner class LocalBinder : Binder() { fun getService(): EveService = this@EveService }
 
-    /**
-     * Submit a task to the EVE pipeline via the local Hermes HTTP gateway.
-     *
-     * This is the same path that external tools use (adb-forwarded curl), but
-     * called directly from Kotlin so Fragments don't need adb.
-     *
-     * Must be called on a background thread (performs network I/O).
-     */
-    fun submitTask(action: String, params: Map<String, String> = emptyMap()) {
-        val tokenFile = File(filesDir, "hermes_token.txt")
-        val portFile  = File(filesDir, "hermes_port.txt")
-        if (!tokenFile.exists()) {
-            Log.w(TAG, "submitTask: token file not found — Hermes not started yet")
-            EveEventBus.emit(EveEvent.LogLine("Cannot submit task: EVE not ready yet", "WARN"))
-            return
-        }
-        val token = tokenFile.readText().trim()
-        // Read the port that HermesAgent actually bound to (may differ from 5001
-        // if that port was already in use when the service started).
-        val port = portFile.takeIf { it.exists() }?.readText()?.trim()?.toIntOrNull() ?: 5001
-        val body = JSONObject().apply {
-            put("action", action)
-            put("params", JSONObject(params as Map<*, *>))
-        }.toString().toRequestBody("application/json".toMediaType())
-
-        val request = Request.Builder()
-            .url("http://127.0.0.1:$port/command")
-            .addHeader("Authorization", "Bearer $token")
-            .post(body)
-            .build()
-
+    fun submitTask(action: String, params: Map<String, String> = emptyMap(), taskId: String = UUID.randomUUID().toString().replace("-", "")) {
+        val tokenFile = File(filesDir, "hermes_token.txt"); val portFile = File(filesDir, "hermes_port.txt")
+        if (!tokenFile.exists()) { EveEventBus.emit(EveEvent.LogLine("EVE runtime is still starting", "WARN")); return }
+        val token = tokenFile.readText().trim(); val port = portFile.takeIf { it.exists() }?.readText()?.trim()?.toIntOrNull() ?: 5001
+        val safeParams = params.toMutableMap().apply { put("task_id", taskId) }
+        val body = JSONObject().apply { put("action", action); put("params", JSONObject(safeParams as Map<*, *>)) }.toString().toRequestBody("application/json".toMediaType())
+        val request = Request.Builder().url("http://127.0.0.1:$port/command").addHeader("Authorization", "Bearer $token").post(body).build()
         okHttp.newCall(request).enqueue(object : okhttp3.Callback {
-            override fun onFailure(call: okhttp3.Call, e: java.io.IOException) {
-                val msg = "Task submit failed (${action}): ${e.message}"
-                Log.e(TAG, msg)
-                crashReporter.logException(e, "submitTask")
-                EveEventBus.emit(EveEvent.LogLine(msg, "ERROR"))
-            }
-            override fun onResponse(call: okhttp3.Call, response: okhttp3.Response) {
-                response.use {
-                    EveEventBus.emit(EveEvent.LogLine(
-                        "Task submitted: $action → ${response.code}", "INFO"
-                    ))
-                }
-            }
+            override fun onFailure(call: okhttp3.Call, e: java.io.IOException) { EveEventBus.emit(EveEvent.LogLine("Task submit failed ($action): ${e.message}", "ERROR")) }
+            override fun onResponse(call: okhttp3.Call, response: okhttp3.Response) { response.use { val detail = response.body?.string().orEmpty().take(300); EveEventBus.emit(EveEvent.LogLine(if (response.isSuccessful) "Task accepted: $action (${response.code})" else "Task rejected: $action (${response.code}) $detail", if (response.isSuccessful) "INFO" else "ERROR")) } }
         })
     }
 
-    // ── Helpers ───────────────────────────────────────────────────────────────
+    fun controlPipeline(taskId: String, command: String, task: String = "", project: String = "default", stage: String = "Plan") =
+        submitTask("agent_hub_control", mapOf("task_id" to taskId, "command" to command, "task" to task, "project" to project, "stage" to stage))
 
-    private fun buildNotification(): Notification {
-        val channelId = "eve_channel"
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                channelId, "EVE Agent", NotificationManager.IMPORTANCE_LOW
-            )
-            getSystemService(NotificationManager::class.java)
-                .createNotificationChannel(channel)
-        }
-        return NotificationCompat.Builder(this, channelId)
-            .setContentTitle("EVE Agent")
-            .setContentText("Orchestrating tasks…")
-            .setSmallIcon(android.R.drawable.ic_dialog_info)
-            .setOngoing(true)
-            .build()
+    fun cancelAgentHub() = submitTask("agent_hub_control", mapOf("command" to "cancel", "task_id" to "all"))
+
+    fun testModelProvider(callback: (String) -> Unit) {
+        val py = try { if (!Python.isStarted()) Python.start(AndroidPlatform(this)); Python.getInstance() } catch (e: Exception) { callback("Python runtime unavailable: ${e.message}"); return }
+        Thread {
+            try {
+                val env = requireNotNull(py.getModule("os").get("environ")) { "Python os.environ is unavailable" }; applyModelProviderEnvironment(env); val config = ModelProviderStore(this).load()
+                if (config.model.isBlank()) { callback("EVE needs a model selection. Choose Auto or a model first."); return@Thread }
+                if (config.provider != "ollama" && config.apiKey.isBlank()) { callback("${config.provider} requires an API key. Add it in AI Models."); return@Thread }
+                val provider = py.getModule("eve.model_provider").callAttr("build_provider", filesDir.absolutePath); val result = provider.callAttr("health_check").toString().trim()
+                callback(if (result.equals("OK", true)) "✓ ${config.provider} connected — ${config.model}" else "✓ ${config.provider} responded: $result")
+            } catch (e: Exception) { callback("Provider test failed: ${e.message ?: "unknown error"}") }
+        }.start()
     }
 
-    private fun isAccessibilityServiceEnabled(): Boolean {
-        val prefString = Settings.Secure.getString(
-            contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
-        ) ?: return false
-        return prefString.contains("${packageName}/.VirtualAccessibilityService")
-    }
-
-    /**
-     * Forward any uncaught exceptions to [CrashReporter] and the event bus
-     * before the process dies, so the user sees something useful in the log.
-     */
-    private fun installUncaughtExceptionHandler() {
-        val existing = Thread.getDefaultUncaughtExceptionHandler()
-        Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
-            crashReporter.logException(throwable, "UncaughtException[${thread.name}]")
-            EveEventBus.emit(EveEvent.LogLine(
-                "CRASH in ${thread.name}: ${throwable.message}", "ERROR"
-            ))
-            existing?.uncaughtException(thread, throwable)
-        }
-    }
-
-    companion object {
-        private const val NOTIFICATION_ID = 1
-    }
+    private fun buildNotification(): Notification { val channelId = "eve_channel"; if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) getSystemService(NotificationManager::class.java).createNotificationChannel(NotificationChannel(channelId, "EVE Agent", NotificationManager.IMPORTANCE_LOW)); return NotificationCompat.Builder(this, channelId).setContentTitle("EVE Agent").setContentText("EVE Agent Hub running").setSmallIcon(android.R.drawable.ic_dialog_info).setOngoing(true).build() }
+    private fun isAccessibilityServiceEnabled(): Boolean { val value = Settings.Secure.getString(contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES) ?: return false; return value.contains("${packageName}/.VirtualAccessibilityService") }
+    private fun installUncaughtExceptionHandler() { val existing = Thread.getDefaultUncaughtExceptionHandler(); Thread.setDefaultUncaughtExceptionHandler { thread, throwable -> crashReporter.logException(throwable, "UncaughtException[${thread.name}]"); EveEventBus.emit(EveEvent.LogLine("CRASH in ${thread.name}: ${throwable.message}", "ERROR")); existing?.uncaughtException(thread, throwable) } }
+    companion object { private const val NOTIFICATION_ID = 1 }
 }

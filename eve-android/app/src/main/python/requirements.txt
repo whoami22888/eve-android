@@ -1,5 +1,5 @@
-flask
-requests
-opencv-python-headless
-Pillow
-spacy
+# Runtime dependencies used by Eve's local Hermes and Agent Hub services.
+# Keep this list intentionally small: native scientific packages are not required
+# by the current agent runtime and make Android builds unnecessarily fragile.
+Flask==3.1.2
+requests==2.32.4

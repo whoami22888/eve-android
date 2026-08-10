@@ -1,0 +1,6 @@
+{
+  "base_url": "http://127.0.0.1:11434",
+  "model": "qwen3-coder",
+  "api_key": "",
+  "timeout_seconds": 120
+}

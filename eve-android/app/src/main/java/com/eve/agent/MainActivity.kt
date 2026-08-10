@@ -15,18 +15,18 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var viewPager: ViewPager2
     private lateinit var tabLayout: TabLayout
-
-    /** Exposed as `internal` so Fragments can call [EveService.submitTask]. */
     internal var eveService: EveService? = null
     private var serviceBound = false
 
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
             eveService = (binder as EveService.LocalBinder).getService()
+            currentService = eveService
             serviceBound = true
         }
         override fun onServiceDisconnected(name: ComponentName?) {
             eveService = null
+            currentService = null
             serviceBound = false
         }
     }
@@ -34,36 +34,36 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
-
         viewPager = findViewById(R.id.viewPager)
         tabLayout = findViewById(R.id.tabLayout)
 
         val sections = listOf(
-            "Dashboard"      to DashboardFragment(),
+            "Dashboard" to DashboardFragment(),
+            "Agent Hub" to AgentHubFragment(),
+            "AI Models" to ModelSettingsFragment(),
             "Agent Computer" to AgentComputerFragment(),
-            "Memory Editor"  to MemoryEditorFragment(),
-            "History"        to HistoryFragment(),
-            "Setup"          to SetupFragment()
+            "Memory Editor" to MemoryEditorFragment(),
+            "History" to HistoryFragment(),
+            "Setup" to SetupFragment()
         )
+        viewPager.adapter = SectionPagerAdapter(this, sections)
+        TabLayoutMediator(tabLayout, viewPager) { tab, position -> tab.text = sections[position].first }.attach()
 
-        val adapter = SectionPagerAdapter(this, sections)
-        viewPager.adapter = adapter
-
-        TabLayoutMediator(tabLayout, viewPager) { tab, position ->
-            tab.text = sections[position].first
-        }.attach()
-
-        // Start and bind the background orchestrator service
         val serviceIntent = Intent(this, EveService::class.java)
         startForegroundService(serviceIntent)
         bindService(serviceIntent, serviceConnection, Context.BIND_AUTO_CREATE)
     }
 
     override fun onDestroy() {
-        super.onDestroy()
         if (serviceBound) {
             unbindService(serviceConnection)
             serviceBound = false
         }
+        currentService = null
+        super.onDestroy()
+    }
+
+    companion object {
+        @Volatile internal var currentService: EveService? = null
     }
 }
