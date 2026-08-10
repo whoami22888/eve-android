@@ -43,12 +43,32 @@ class EveService : Service() {
         eveInstance = eveModule.callAttr("EVE")
         val hermes = py.getModule("eve.hermes_agent").callAttr("HermesAgent").call(filesDir.absolutePath)
         val hacxgent = py.getModule("eve.hacxgent_agent").callAttr("HacxgentAgent").call()
+        // The Python constructor accepts the Chaquopy positional path used here
+        // and normalizes it to data_dir for compatibility with older builds.
         val agentHub = py.getModule("eve.agent_hub_agent").callAttr("AgentHubAgent").call(filesDir.absolutePath)
         eveInstance.callAttr("register_agent", "hermes", hermes)
         eveInstance.callAttr("register_agent", "agent_hub", agentHub)
         eveInstance.callAttr("register_agent", "hacxgent", hacxgent)
         Thread({ eveInstance.callAttr("run") }, "eve-orchestrator").apply { isDaemon = true; start() }
         EveEventBus.emit(EveEvent.StatusChanged("EVE is running — Agent Hub ready"))
+    }
+
+    /** Refresh the running Python provider configuration after settings change. */
+    fun refreshModelProvider() {
+        Thread {
+            try {
+                val py = if (!Python.isStarted()) {
+                    Python.start(AndroidPlatform(this))
+                    Python.getInstance()
+                } else Python.getInstance()
+                val env = requireNotNull(py.getModule("os").get("environ")) { "Python os.environ is unavailable" }
+                applyModelProviderEnvironment(env)
+                py.getModule("eve.agent_hub_agent").callAttr("refresh_default_provider", filesDir.absolutePath)
+                EveEventBus.emit(EveEvent.StatusChanged("AI model settings applied"))
+            } catch (e: Exception) {
+                EveEventBus.emit(EveEvent.LogLine("Could not refresh AI model settings: ${e.message}", "ERROR"))
+            }
+        }.start()
     }
 
     private fun applyModelProviderEnvironment(env: PyObject) {
@@ -75,9 +95,20 @@ class EveService : Service() {
         val request = Request.Builder().url("http://127.0.0.1:$port/command").addHeader("Authorization", "Bearer $token").post(body).build()
         okHttp.newCall(request).enqueue(object : okhttp3.Callback {
             override fun onFailure(call: okhttp3.Call, e: java.io.IOException) { EveEventBus.emit(EveEvent.LogLine("Task submit failed ($action): ${e.message}", "ERROR")) }
-            override fun onResponse(call: okhttp3.Call, response: okhttp3.Response) { response.use { EveEventBus.emit(EveEvent.LogLine("Task submitted: $action → ${response.code}", "INFO")) } }
+            override fun onResponse(call: okhttp3.Call, response: okhttp3.Response) {
+                response.use {
+                    val bodyText = response.body?.string().orEmpty().takeLast(1000)
+                    if (response.isSuccessful) {
+                        EveEventBus.emit(EveEvent.LogLine("Task accepted: $action (${response.code})", "INFO"))
+                    } else {
+                        EveEventBus.emit(EveEvent.LogLine("Task rejected: $action (${response.code}) ${bodyText.take(300)}", "ERROR"))
+                    }
+                }
+            }
         })
     }
+
+    fun cancelAgentHub() = submitTask("agent_hub_cancel")
 
     fun testModelProvider(callback: (String) -> Unit) {
         val py = try { if (!Python.isStarted()) Python.start(AndroidPlatform(this)); Python.getInstance() } catch (e: Exception) { callback("Python runtime unavailable: ${e.message}"); return }
