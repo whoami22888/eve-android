@@ -1,0 +1,64 @@
+import json
+import os
+import tempfile
+import unittest
+from unittest.mock import patch
+
+from eve.model_provider import (
+    AnthropicProvider,
+    GeminiProvider,
+    ModelConfig,
+    ModelProviderError,
+    OpenAICompatibleProvider,
+    _auto_model,
+    load_model_config,
+)
+
+
+class ProviderTests(unittest.TestCase):
+    def test_auto_routing_selects_stage_models(self):
+        self.assertEqual(_auto_model("deepseek", "auto", "coder"), "deepseek-v4-pro")
+        self.assertEqual(_auto_model("deepseek", "auto", "planner"), "deepseek-v4-flash")
+        self.assertEqual(_auto_model("gemini", "auto", "security"), "gemini-3.1-pro-preview")
+        self.assertEqual(_auto_model("openai", "auto", "tester"), "gpt-5-mini")
+        self.assertEqual(_auto_model("anthropic", "auto", "reviewer"), "claude-opus-4-1")
+
+    def test_openai_compatible_response(self):
+        config = ModelConfig("openai", "https://example.test", "auto", "key")
+        provider = OpenAICompatibleProvider(config)
+        with patch("eve.model_provider._request_json", return_value={"choices": [{"message": {"content": "OK"}}]}) as request:
+            self.assertEqual(provider.complete("s", "u", stage="planner"), "OK")
+            payload = request.call_args.args[1]
+            self.assertEqual(payload["model"], "gpt-5-mini")
+
+    def test_anthropic_response(self):
+        config = ModelConfig("anthropic", "https://example.test", "auto", "key")
+        provider = AnthropicProvider(config)
+        with patch("eve.model_provider._request_json", return_value={"content": [{"type": "text", "text": "OK"}]}):
+            self.assertEqual(provider.complete("s", "u", stage="coder"), "OK")
+
+    def test_gemini_3_does_not_send_deprecated_temperature(self):
+        config = ModelConfig("gemini", "https://example.test", "auto", "key")
+        provider = GeminiProvider(config)
+        with patch("eve.model_provider._request_json", return_value={"candidates": [{"content": {"parts": [{"text": "OK"}]}}]}) as request:
+            self.assertEqual(provider.complete("s", "u", stage="planner"), "OK")
+            payload = request.call_args.args[1]
+            self.assertNotIn("generationConfig", payload)
+
+    def test_missing_model_is_clean_configuration_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(ModelProviderError):
+                load_model_config(directory)
+
+    def test_deepseek_v4_config_loads(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with open(os.path.join(directory, "model_config.json"), "w", encoding="utf-8") as fh:
+                json.dump({"provider": "deepseek", "model": "auto", "api_key": "test"}, fh)
+            config = load_model_config(directory)
+            self.assertEqual(config.provider, "deepseek")
+            self.assertEqual(config.model, "auto")
+            self.assertEqual(config.base_url, "https://api.deepseek.com")
+
+
+if __name__ == "__main__":
+    unittest.main()
