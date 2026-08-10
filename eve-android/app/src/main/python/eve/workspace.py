@@ -2,21 +2,33 @@
 
 from __future__ import annotations
 
-import os
+import re
 from pathlib import Path
-from typing import Iterable, List, Tuple
+from typing import List
 
 
 class WorkspaceError(RuntimeError):
     pass
 
 
+_PROJECT_NAME = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+
+
 class ProjectWorkspace:
     def __init__(self, root: str, project: str = "default"):
-        self.root = Path(root).resolve() / "projects" / project
+        if not _PROJECT_NAME.fullmatch(project):
+            raise WorkspaceError("Invalid project name")
+        base = Path(root).resolve() / "projects"
+        self.root = (base / project).resolve()
+        try:
+            self.root.relative_to(base)
+        except ValueError as exc:
+            raise WorkspaceError("Project path escapes workspace root") from exc
         self.root.mkdir(parents=True, exist_ok=True)
 
     def _safe(self, relative: str) -> Path:
+        if not relative or relative.startswith(("/", "\\")):
+            raise WorkspaceError("Workspace path must be relative")
         candidate = (self.root / relative).resolve()
         try:
             candidate.relative_to(self.root)
