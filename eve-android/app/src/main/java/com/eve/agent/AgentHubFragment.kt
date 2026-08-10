@@ -3,38 +3,29 @@ package com.eve.agent
 import android.graphics.Color
 import android.os.Bundle
 import android.view.Gravity
+import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
+import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
 import androidx.fragment.app.Fragment
-import androidx.lifecycle.lifecycleScope
-import kotlinx.coroutines.launch
+import androidx.fragment.app.activityViewModels
+import java.util.UUID
 
-/** Normal Eve screen for the multi-agent workspace. */
+/** Lifecycle-aware Agent Hub pipeline control center. */
 class AgentHubFragment : Fragment() {
-    private lateinit var bridge: LocalAgentRuntimeBridge
+    private val viewModel: EveViewModel by activityViewModels()
     private lateinit var statusText: TextView
     private lateinit var progress: ProgressBar
-    private lateinit var logText: TextView
+    private lateinit var stageText: TextView
+    private lateinit var historyText: TextView
+    private var activeTaskId: String? = null
 
-    private val agents = listOf(
-        "Planner" to "Orchestrates the task",
-        "Coder" to "Implements changes",
-        "Reviewer" to "Reviews the work",
-        "Tester" to "Runs verification",
-        "Security" to "Checks security"
-    )
-
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        bridge = LocalAgentRuntimeBridge(requireContext())
-    }
-
-    override fun onCreateView(inflater: android.view.LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View {
+    override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View {
         val context = requireContext()
         val root = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
@@ -42,105 +33,55 @@ class AgentHubFragment : Fragment() {
             setBackgroundColor(Color.rgb(10, 14, 20))
         }
         root.addView(TextView(context).apply {
-            text = "EVE AGENT HUB"
-            textSize = 22f
-            setTextColor(Color.WHITE)
-            setTypeface(typeface, android.graphics.Typeface.BOLD)
+            text = "EVE PIPELINE CONTROL CENTER"
+            textSize = 22f; setTextColor(Color.WHITE); setTypeface(typeface, android.graphics.Typeface.BOLD)
         })
-        statusText = TextView(context).apply {
-            text = "Connecting to local runtime…"
-            textSize = 14f
-            setTextColor(Color.LTGRAY)
-            setPadding(0, 8, 0, 18)
-        }
+        statusText = TextView(context).apply { text = "Ready"; textSize = 14f; setTextColor(Color.LTGRAY); setPadding(0, 8, 0, 8) }
         root.addView(statusText)
         progress = ProgressBar(context, null, android.R.attr.progressBarStyleHorizontal).apply { max = 100; progress = 0 }
         root.addView(progress, LinearLayout.LayoutParams(-1, 12))
-        root.addView(TextView(context).apply {
-            text = "\nCurrent project\nEve Android"
-            textSize = 16f
-            setTextColor(Color.WHITE)
-        })
-        agents.forEachIndexed { index, (name, role) -> root.addView(agentCard(name, role, index)) }
-
-        val taskInput = android.widget.EditText(context).apply {
-            hint = "Tell Eve what to build…"
-            setHintTextColor(Color.GRAY)
-            setTextColor(Color.WHITE)
-            setSingleLine(false)
-            minLines = 2
-            setPadding(16, 12, 16, 12)
-            setBackgroundColor(Color.rgb(28, 34, 43))
+        stageText = TextView(context).apply { text = "Plan → Research → Code → Test → Review"; textSize = 14f; setTextColor(Color.WHITE); setPadding(0, 10, 0, 12) }
+        root.addView(stageText)
+        val taskInput = EditText(context).apply {
+            hint = "Tell EVE what to build…"; setTextColor(Color.WHITE); setHintTextColor(Color.GRAY)
+            minLines = 2; setPadding(16, 12, 16, 12); setBackgroundColor(Color.rgb(28, 34, 43))
         }
-        root.addView(taskInput, LinearLayout.LayoutParams(-1, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = 18 })
-        val actions = LinearLayout(context).apply { gravity = Gravity.END; orientation = LinearLayout.HORIZONTAL }
-        actions.addView(Button(context).apply { text = "PAUSE"; setOnClickListener { bridge.stopPipeline() } })
-        actions.addView(Button(context).apply {
-            text = "RUN AGENTS"
-            setOnClickListener {
-                val task = taskInput.text.toString().trim()
-                if (task.isNotEmpty()) bridge.runPipeline(task)
-            }
-        })
-        root.addView(actions)
-        logText = TextView(context).apply {
-            text = "Agent activity will appear here."
-            textSize = 13f
-            setTextColor(Color.LTGRAY)
-            setPadding(0, 16, 0, 16)
+        root.addView(taskInput)
+        val controls = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.END }
+        fun add(label: String, action: () -> Unit) = controls.addView(Button(context).apply { text = label; setOnClickListener { action() } })
+        add("RUN") {
+            val task = taskInput.text.toString().trim(); val service = MainActivity.currentService
+            if (task.isEmpty() || service == null) { statusText.text = if (service == null) "EVE runtime is not connected" else "Enter a task first"; return@add }
+            val id = UUID.randomUUID().toString().replace("-", "")
+            activeTaskId = id; viewModel.registerPipeline(id, task)
+            service.submitTask("agent_hub", mapOf("task" to task, "project" to "default"), id)
         }
-        root.addView(ScrollView(context).apply { addView(logText) }, LinearLayout.LayoutParams(-1, 0, 1f))
+        add("PAUSE") { activeTaskId?.let { MainActivity.currentService?.controlPipeline(it, "pause") } }
+        add("RESUME") { activeTaskId?.let { MainActivity.currentService?.controlPipeline(it, "resume") } }
+        add("CANCEL") { activeTaskId?.let { MainActivity.currentService?.controlPipeline(it, "cancel") } }
+        add("RETRY") { activeTaskId?.let { MainActivity.currentService?.controlPipeline(it, "retry") } }
+        root.addView(controls)
+        root.addView(TextView(context).apply { text = "Pipeline history"; textSize = 16f; setTextColor(Color.WHITE); setPadding(0, 16, 0, 6) })
+        val scroll = ScrollView(context)
+        historyText = TextView(context).apply { text = "No pipeline runs yet."; textSize = 13f; setTextColor(Color.LTGRAY); setPadding(0, 8, 0, 16) }
+        scroll.addView(historyText)
+        root.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
         return root
-    }
-
-    private fun agentCard(name: String, role: String, index: Int): View {
-        val context = requireContext()
-        val row = LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(16, 12, 16, 12)
-            setBackgroundColor(Color.rgb(20, 26, 34))
-        }
-        row.addView(TextView(context).apply {
-            text = "$name\n$role"
-            textSize = 15f
-            setTextColor(Color.WHITE)
-        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        row.addView(TextView(context).apply {
-            text = if (index == 0) "READY" else "WAITING"
-            textSize = 12f
-            setTextColor(if (index == 0) Color.GREEN else Color.GRAY)
-        })
-        return row.apply {
-            layoutParams = LinearLayout.LayoutParams(-1, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = 8 }
-        }
     }
 
     override fun onStart() {
         super.onStart()
-        bridge.attach(MainActivity.currentService)
-        viewLifecycleOwner.lifecycleScope.launch {
-            bridge.state.collect { state ->
-                statusText.text = state.lastMessage
-                progress.progress = state.progress
-                logText.text = state.lastMessage
+        viewModel.pipelineRuns.observe(viewLifecycleOwner) { runs ->
+            if (runs.isNotEmpty() && activeTaskId == null) activeTaskId = runs.first().taskId
+            val active = runs.firstOrNull { it.taskId == activeTaskId } ?: runs.firstOrNull()
+            if (active != null) {
+                statusText.text = "${active.status.uppercase()} • ${active.message} • ${active.taskId.take(12)}"
+                progress.progress = active.progress
+                stageText.text = "Plan → Research → Code → Test → Review\nCurrent: ${active.stage}"
+            }
+            historyText.text = runs.joinToString("\n\n") { r ->
+                "${r.taskId}\n${r.status.uppercase()} • ${r.progress}% • ${r.stage}\n${r.message}${if (r.error.isNotBlank()) "\nError: ${r.error}" else ""}"
             }
         }
-        viewLifecycleOwner.lifecycleScope.launch {
-            EveEventBus.events.collect { event ->
-                bridge.updateFromEvent(event)
-                when (event) {
-                    is EveEvent.LogLine -> logText.text = "${event.level}: ${event.message}"
-                    is EveEvent.TaskCompleted -> logText.text = if (event.failed) "FAILED: ${event.result}" else "COMPLETED: ${event.result}"
-                    is EveEvent.StatusChanged -> logText.text = event.status
-                }
-            }
-        }
-    }
-
-    override fun onDestroyView() {
-        // Do not cancel the bridge here. The Fragment may recreate its view
-        // while retaining the same bridge instance.
-        super.onDestroyView()
     }
 }
