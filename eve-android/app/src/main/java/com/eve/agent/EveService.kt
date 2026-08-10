@@ -35,8 +35,8 @@ class EveService : Service() {
         if (!isAccessibilityServiceEnabled()) startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         if (!Python.isStarted()) Python.start(AndroidPlatform(this))
         val py = Python.getInstance()
-        val env = py.getModule("os").callAttr("environ")
-        env.__setitem__("EVE_DATA_DIR", filesDir.absolutePath)
+        val env = py.getModule("os").get("environ")
+        env.callAttr("__setitem__", "EVE_DATA_DIR", filesDir.absolutePath)
         applyModelProviderEnvironment(env)
 
         val eveModule = py.getModule("eve.orchestrator")
@@ -53,11 +53,11 @@ class EveService : Service() {
 
     private fun applyModelProviderEnvironment(env: PyObject) {
         val config = ModelProviderStore(this).load()
-        env.__setitem__("EVE_MODEL_PROVIDER", config.provider)
-        env.__setitem__("EVE_MODEL_BASE_URL", config.baseUrl)
-        env.__setitem__("EVE_MODEL_NAME", config.model)
-        env.__setitem__("EVE_MODEL_API_KEY", config.apiKey)
-        env.__setitem__("EVE_MODEL_TIMEOUT", config.timeoutSeconds.toString())
+        env.callAttr("__setitem__", "EVE_MODEL_PROVIDER", config.provider)
+        env.callAttr("__setitem__", "EVE_MODEL_BASE_URL", config.baseUrl)
+        env.callAttr("__setitem__", "EVE_MODEL_NAME", config.model)
+        env.callAttr("__setitem__", "EVE_MODEL_API_KEY", config.apiKey)
+        env.callAttr("__setitem__", "EVE_MODEL_TIMEOUT", config.timeoutSeconds.toString())
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
@@ -83,7 +83,7 @@ class EveService : Service() {
         val py = try { if (!Python.isStarted()) Python.start(AndroidPlatform(this)); Python.getInstance() } catch (e: Exception) { callback("Python runtime unavailable: ${e.message}"); return }
         Thread {
             try {
-                val env = py.getModule("os").callAttr("environ")
+                val env = py.getModule("os").get("environ")
                 applyModelProviderEnvironment(env)
                 val config = ModelProviderStore(this).load()
                 if (config.model.isBlank()) { callback("EVE needs a model selection. Choose Auto or a model first."); return@Thread }
