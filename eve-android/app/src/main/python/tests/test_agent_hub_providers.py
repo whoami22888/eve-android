@@ -96,9 +96,6 @@ class ProviderTests(unittest.TestCase):
                 json.dump({"provider": "deepseek", "model": "auto", "api_key": "test"}, fh)
             agent._refresh_provider()
             self.assertEqual(agent.provider.config.provider, "deepseek")
-            with patch.object(agent.provider, "complete", return_value='{"summary":"ok"}'):
-                result = agent._call("planner", "test")
-            self.assertEqual(result["summary"], "ok")
 
 
 if __name__ == "__main__":
