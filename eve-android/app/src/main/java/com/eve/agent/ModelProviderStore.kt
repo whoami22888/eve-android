@@ -25,7 +25,7 @@ class ModelProviderStore(context: Context) {
     private val keyAlias = "eve_model_provider_key"
 
     fun load(): Config = Config(
-        provider = prefs.getString("provider", "OpenAI-compatible") ?: "OpenAI-compatible",
+        provider = prefs.getString("provider", "openai") ?: "openai",
         baseUrl = prefs.getString("base_url", "") ?: "",
         model = prefs.getString("model", "") ?: "",
         apiKey = decrypt(prefs.getString("api_key", "") ?: ""),
@@ -34,7 +34,7 @@ class ModelProviderStore(context: Context) {
 
     fun save(config: Config) {
         prefs.edit()
-            .putString("provider", config.provider)
+            .putString("provider", config.provider.trim().lowercase())
             .putString("base_url", config.baseUrl.trim().trimEnd('/'))
             .putString("model", config.model.trim())
             .putString("api_key", encrypt(config.apiKey))
@@ -70,6 +70,7 @@ class ModelProviderStore(context: Context) {
         if (value.isEmpty()) return ""
         return try {
             val combined = Base64.decode(value, Base64.NO_WRAP)
+            if (combined.size < 13) return ""
             val iv = combined.copyOfRange(0, 12)
             val ciphertext = combined.copyOfRange(12, combined.size)
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
