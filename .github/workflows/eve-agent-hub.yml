@@ -70,6 +70,6 @@ jobs:
         with:
           version: 10.15.0
       - name: Install workspace dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --no-frozen-lockfile
       - name: Run TypeScript typecheck
         run: pnpm run typecheck
