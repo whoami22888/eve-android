@@ -10,7 +10,6 @@ import android.widget.Button
 import android.widget.EditText
 import android.widget.TextView
 import androidx.fragment.app.Fragment
-import com.eve.agent.R
 import com.google.android.material.switchmaterial.SwitchMaterial
 
 class ModelSettingsFragment : Fragment() {
@@ -42,30 +41,25 @@ class ModelSettingsFragment : Fragment() {
         timeout.setText(saved.timeoutSeconds.toString())
         apiKey.hint = if (saved.apiKey.isBlank()) "API key" else "API key (stored; enter to replace)"
 
-        localMode.setOnCheckedChangeListener { _, checked ->
-            refreshProviders(if (checked) "ollama" else "openai")
-        }
-        providerDropdown.setOnItemClickListener { _, _, position, _ ->
-            val presets = currentPresets()
-            if (position < presets.size) selectPreset(presets[position])
-        }
-        modelDropdown.setOnItemClickListener { _, _, _, _ ->
-            // Model text is read directly on save.
-        }
-
+        localMode.setOnCheckedChangeListener { _, checked -> refreshProviders(if (checked) "ollama" else "openai") }
+        providerDropdown.setOnItemClickListener { _, _, position, _ -> currentPresets().getOrNull(position)?.let(::selectPreset) }
+        modelDropdown.setOnItemClickListener { _, _, _, _ -> }
         view.findViewById<Button>(R.id.saveModel).setOnClickListener { save() }
         view.findViewById<Button>(R.id.testModel).setOnClickListener { testConnection() }
         view.findViewById<Button>(R.id.clearKey).setOnClickListener {
-            store.clearApiKey()
-            apiKey.text?.clear()
-            apiKey.hint = "API key"
-            status.text = "Stored API key cleared."
+            try {
+                store.clearApiKey()
+                apiKey.text?.clear()
+                apiKey.hint = "API key"
+                status.text = "Stored API key cleared."
+            } catch (e: Exception) {
+                status.text = "Could not clear API key: ${e.message ?: "unknown error"}"
+            }
         }
         return view
     }
 
-    private fun currentPresets(): List<ModelProviderPresets.Preset> =
-        if (localMode.isChecked) ModelProviderPresets.LOCAL else ModelProviderPresets.CLOUD
+    private fun currentPresets(): List<ModelProviderPresets.Preset> = if (localMode.isChecked) ModelProviderPresets.LOCAL else ModelProviderPresets.CLOUD
 
     private fun refreshProviders(preferredId: String?) {
         val presets = currentPresets()
@@ -93,30 +87,38 @@ class ModelSettingsFragment : Fragment() {
         if (saved.baseUrl.isNotBlank()) baseUrl.setText(saved.baseUrl)
     }
 
-    private fun save() {
-        val current = store.load()
-        val preset = selectedPreset
-        val enteredKey = apiKey.text?.toString().orEmpty()
-        val timeoutValue = timeout.text?.toString()?.toIntOrNull()?.coerceIn(10, 600) ?: 120
-        val providerId = preset?.id ?: providerDropdown.text.toString().ifBlank { "openai" }
-        store.save(ModelProviderStore.Config(
-            providerId,
-            baseUrl.text.toString().trim(),
-            modelDropdown.text.toString().trim(),
-            if (preset?.apiKeyRequired == false) "" else enteredKey.ifBlank { current.apiKey },
-            timeoutValue
-        ))
-        status.text = "Saved. EVE will use ${preset?.name ?: providerId} for the Agent Hub."
+    /** Returns true only when encrypted persistence and runtime refresh both succeed. */
+    private fun save(): Boolean {
+        return try {
+            val current = store.load()
+            val preset = selectedPreset
+            val enteredKey = apiKey.text?.toString().orEmpty()
+            val timeoutValue = timeout.text?.toString()?.toIntOrNull()?.coerceIn(10, 600) ?: 120
+            val providerId = preset?.id ?: providerDropdown.text.toString().ifBlank { "openai" }
+            store.save(ModelProviderStore.Config(
+                providerId,
+                baseUrl.text.toString().trim(),
+                modelDropdown.text.toString().trim(),
+                if (preset?.apiKeyRequired == false) "" else enteredKey.ifBlank { current.apiKey },
+                timeoutValue
+            ))
+            MainActivity.currentService?.refreshModelProvider()
+            status.text = "Saved. EVE will use ${preset?.name ?: providerId} for the Agent Hub."
+            true
+        } catch (e: Exception) {
+            status.text = "Could not save AI model settings: ${e.message ?: "unknown error"}"
+            false
+        }
     }
 
     private fun testConnection() {
-        save()
+        if (!save()) return
         val service = MainActivity.currentService
         if (service == null) {
             status.text = "EVE runtime is not connected."
             return
         }
         status.text = "Testing ${selectedPreset?.name ?: "provider"}…"
-        service.testModelProvider { message -> requireActivity().runOnUiThread { status.text = message } }
+        service.testModelProvider { message -> activity?.runOnUiThread { if (isAdded) status.text = message } }
     }
 }
