@@ -15,20 +15,14 @@ android {
         versionCode 1
         versionName "1.0"
 
-        manifestPlaceholders = [
-            appAuthRedirectScheme: "com.eve.agent"
-        ]
+        manifestPlaceholders = [appAuthRedirectScheme: "com.eve.agent"]
 
-        ndk {
-            abiFilters "arm64-v8a"
-        }
+        ndk { abiFilters "arm64-v8a" }
 
         python {
             version "3.11"
-            buildPython System.getenv("PYTHON_BIN") ?: "python3"
-            pip {
-                install "-r", "src/main/python/requirements.txt"
-            }
+            buildPython System.getenv("PYTHON_BIN") ?: "python3.11"
+            pip { install "-r", "src/main/python/requirements.txt" }
         }
     }
 
@@ -47,19 +41,14 @@ android {
             minifyEnabled true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
-        debug {
-            minifyEnabled false
-        }
+        debug { minifyEnabled false }
     }
 
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_1_8
         targetCompatibility JavaVersion.VERSION_1_8
     }
-
-    kotlinOptions {
-        jvmTarget = "1.8"
-    }
+    kotlinOptions { jvmTarget = "1.8" }
 }
 
 dependencies {
