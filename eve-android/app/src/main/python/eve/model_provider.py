@@ -44,7 +44,12 @@ def load_model_config(data_dir: str) -> ModelConfig:
     base_url = str(values.get("base_url") or os.environ.get("EVE_MODEL_BASE_URL") or "").strip().rstrip("/")
     model = str(values.get("model") or os.environ.get("EVE_MODEL_NAME") or "").strip()
     api_key = str(values.get("api_key") or os.environ.get("EVE_MODEL_API_KEY") or "").strip()
-    timeout = int(values.get("timeout_seconds") or os.environ.get("EVE_MODEL_TIMEOUT") or 120)
+    raw_timeout = values.get("timeout_seconds") or os.environ.get("EVE_MODEL_TIMEOUT") or 120
+    try:
+        timeout = int(raw_timeout)
+    except (TypeError, ValueError) as exc:
+        raise ModelProviderError("Model timeout must be an integer number of seconds") from exc
+    timeout = max(10, min(timeout, 600))
 
     defaults = {
         "openai": "https://api.openai.com",
@@ -60,7 +65,7 @@ def load_model_config(data_dir: str) -> ModelConfig:
         raise ModelProviderError("Model provider is not configured: choose a model before running Agent Hub")
     if provider not in defaults and not base_url:
         raise ModelProviderError("Unknown provider requires a base URL")
-    return ModelConfig(provider, base_url, model, api_key, max(10, timeout))
+    return ModelConfig(provider, base_url, model, api_key, timeout)
 
 
 def _request_json(url: str, payload: dict, headers: dict, timeout: int) -> dict:
@@ -187,7 +192,6 @@ class GeminiProvider:
             "systemInstruction": {"parts": [{"text": system}]},
             "contents": [{"role": "user", "parts": [{"text": user}]}],
         }
-        # Gemini 3.x deprecates sampling controls; only send temperature for older models.
         if not model.startswith("gemini-3."):
             payload["generationConfig"] = {"temperature": temperature}
         url = self.config.base_url.rstrip("/") + f"/v1beta/models/{urllib.parse.quote(model, safe='')}:generateContent"
