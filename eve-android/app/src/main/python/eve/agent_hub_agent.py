@@ -11,6 +11,7 @@ import json
 import os
 import re
 import subprocess
+import threading
 import time
 from typing import Dict, List
 
@@ -30,7 +31,15 @@ _SYSTEM = {
 
 _ALLOWED_TEST_COMMANDS = (
     "./gradlew test", "./gradlew :app:test", "./gradlew lint",
+    "./gradlew :app:testDebugUnitTest", "./gradlew :app:assembleDebug",
     "npm test", "npm run test", "npm run lint", "pytest", "python -m pytest",
+)
+
+# Only pass environment variables required to execute project tests. In
+# particular, provider credentials must never reach model-generated code.
+_SAFE_ENV_KEYS = (
+    "PATH", "HOME", "TMPDIR", "TMP", "TEMP", "LANG", "LC_ALL", "USER",
+    "JAVA_HOME", "ANDROID_HOME", "ANDROID_SDK_ROOT", "GRADLE_USER_HOME",
 )
 
 
@@ -44,12 +53,23 @@ def _json(text: str) -> Dict:
         return {"summary": text.strip()}
 
 
+def _safe_env() -> Dict[str, str]:
+    return {key: value for key, value in os.environ.items() if key in _SAFE_ENV_KEYS}
+
+
 class AgentHubAgent:
     def __init__(self, log=None, data_dir=None):
+        # Chaquopy's Java call is positional: AgentHubAgent(filesDir). Keep
+        # backward compatibility while still supporting AgentHubAgent(data_dir=...).
+        if isinstance(log, str) and data_dir is None:
+            data_dir, log = log, None
         self.task_queue = None
-        self.log = log or (lambda message, level="INFO": None)
+        self.log = log if callable(log) else (lambda message, level="INFO": None)
         self.data_dir = data_dir or os.environ.get("EVE_DATA_DIR") or "."
         self.provider = None
+        self._cancel_events = {}
+        self._active_processes = {}
+        self._state_lock = threading.Lock()
         self._refresh_provider()
 
     def _refresh_provider(self) -> None:
@@ -63,9 +83,16 @@ class AgentHubAgent:
         self.task_queue = q
 
     def can_handle(self, task: Task) -> bool:
-        return task.action == "agent_hub"
+        return task.action in {"agent_hub", "agent_hub_cancel"}
 
-    def _call(self, stage: str, user: str) -> Dict:
+    def _cancelled(self, task_id: str) -> bool:
+        with self._state_lock:
+            event = self._cancel_events.get(task_id)
+            return event.is_set() if event else False
+
+    def _call(self, stage: str, user: str, task_id: str = "") -> Dict:
+        if task_id and self._cancelled(task_id):
+            raise RuntimeError("Agent Hub task cancelled")
         self._refresh_provider()
         if self.provider is None:
             raise ModelProviderError("Configure the model provider before running Agent Hub")
@@ -81,22 +108,71 @@ class AgentHubAgent:
             changed.append(str(item["path"]))
         return changed
 
-    def _run_tests(self, workspace: ProjectWorkspace, commands: List[str]) -> List[Dict]:
+    def _redact(self, text: str) -> str:
+        redacted = str(text)
+        secrets = set()
+        if self.provider is not None:
+            key = getattr(getattr(self.provider, "config", None), "api_key", "")
+            if key:
+                secrets.add(key)
+        for key in secrets:
+            redacted = redacted.replace(key, "[REDACTED]")
+        return redacted
+
+    def _run_tests(self, workspace: ProjectWorkspace, commands: List[str], task_id: str = "") -> List[Dict]:
         results = []
         for command in commands[:3]:
+            if self._cancelled(task_id):
+                results.append({"command": command, "status": "cancelled"})
+                break
             if command not in _ALLOWED_TEST_COMMANDS:
                 results.append({"command": command, "status": "skipped", "reason": "not allowlisted"})
                 continue
+            proc = None
             try:
-                proc = subprocess.run(command.split(), cwd=str(workspace.root), capture_output=True,
-                                      text=True, timeout=120, check=False)
+                proc = subprocess.Popen(
+                    command.split(), cwd=str(workspace.root), env=_safe_env(),
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                )
+                with self._state_lock:
+                    self._active_processes[task_id] = proc
+                try:
+                    output, _ = proc.communicate(timeout=120)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    output, _ = proc.communicate()
+                    raise subprocess.TimeoutExpired(command, 120, output=output)
                 results.append({"command": command, "status": "passed" if proc.returncode == 0 else "failed",
-                                "exit_code": proc.returncode, "output": (proc.stdout + proc.stderr)[-4000:]})
-            except (OSError, subprocess.TimeoutExpired) as exc:
-                results.append({"command": command, "status": "error", "output": str(exc)})
+                                "exit_code": proc.returncode, "output": self._redact((output or "")[-4000:])})
+            except subprocess.TimeoutExpired as exc:
+                results.append({"command": command, "status": "error", "output": self._redact(str(exc))})
+            except OSError as exc:
+                results.append({"command": command, "status": "error", "output": self._redact(str(exc))})
+            finally:
+                with self._state_lock:
+                    self._active_processes.pop(task_id, None)
         return results
 
+    def _cancel_all(self) -> None:
+        with self._state_lock:
+            events = list(self._cancel_events.values())
+            processes = list(self._active_processes.values())
+        for event in events:
+            event.set()
+        for process in processes:
+            try:
+                process.kill()
+            except OSError:
+                pass
+
     def assign_task(self, task: Task) -> None:
+        if task.action == "agent_hub_cancel":
+            self._cancel_all()
+            task.status = "completed"
+            task.result = "Agent Hub cancellation requested"
+            task.completed_at = time.time()
+            return
+
         prompt = str(task.params.get("task", "")).strip()
         project = str(task.params.get("project", "default")).strip() or "default"
         if not prompt:
@@ -105,26 +181,31 @@ class AgentHubAgent:
             return
 
         task.status = "running"
-        workspace = ProjectWorkspace(self.data_dir, project)
+        cancel_event = threading.Event()
+        with self._state_lock:
+            self._cancel_events[task.id] = cancel_event
         try:
+            workspace = ProjectWorkspace(self.data_dir, project)
             snapshot = workspace.snapshot()
             self.log(f"Agent Hub planner: {project}")
-            plan = self._call("planner", f"USER REQUEST:\n{prompt}\n\nWORKSPACE:\n{snapshot}")
+            plan = self._call("planner", f"USER REQUEST:\n{prompt}\n\nWORKSPACE:\n{snapshot}", task.id)
 
             self.log("Agent Hub coder: implementing plan")
-            coder = self._call("coder", f"REQUEST:\n{prompt}\n\nPLAN:\n{json.dumps(plan)}\n\nWORKSPACE:\n{snapshot}")
+            coder = self._call("coder", f"REQUEST:\n{prompt}\n\nPLAN:\n{json.dumps(plan)}\n\nWORKSPACE:\n{snapshot}", task.id)
             changed = self._apply_coder_files(workspace, coder)
 
             after = workspace.snapshot()
             self.log("Agent Hub reviewer: checking implementation")
-            review = self._call("reviewer", f"REQUEST:\n{prompt}\n\nPLAN:\n{json.dumps(plan)}\n\nCHANGED:\n{changed}\n\nWORKSPACE:\n{after}")
+            review = self._call("reviewer", f"REQUEST:\n{prompt}\n\nPLAN:\n{json.dumps(plan)}\n\nCHANGED:\n{changed}\n\nWORKSPACE:\n{after}", task.id)
 
             self.log("Agent Hub tester: preparing and running tests")
-            test_plan = self._call("tester", f"REQUEST:\n{prompt}\n\nREVIEW:\n{json.dumps(review)}\n\nWORKSPACE:\n{after}")
-            test_results = self._run_tests(workspace, test_plan.get("commands", []))
+            test_plan = self._call("tester", f"REQUEST:\n{prompt}\n\nREVIEW:\n{json.dumps(review)}\n\nWORKSPACE:\n{after}", task.id)
+            test_results = self._run_tests(workspace, test_plan.get("commands", []), task.id)
+            if self._cancelled(task.id):
+                raise RuntimeError("Agent Hub task cancelled")
 
             self.log("Agent Hub security: final review")
-            security = self._call("security", f"REQUEST:\n{prompt}\n\nREVIEW:\n{json.dumps(review)}\n\nTEST RESULTS:\n{json.dumps(test_results)}\n\nWORKSPACE:\n{after}")
+            security = self._call("security", f"REQUEST:\n{prompt}\n\nREVIEW:\n{json.dumps(review)}\n\nTEST RESULTS:\n{json.dumps(test_results)}\n\nWORKSPACE:\n{after}", task.id)
 
             task.result = json.dumps({
                 "project": project,
@@ -137,10 +218,14 @@ class AgentHubAgent:
             task.status = "completed"
             task.completed_at = time.time()
             self.log("Agent Hub pipeline completed")
-        except (ModelProviderError, WorkspaceError, OSError, ValueError) as exc:
+        except (ModelProviderError, WorkspaceError, OSError, ValueError, RuntimeError) as exc:
             task.status = "failed"
             task.error = str(exc)
             self.log(f"Agent Hub failed: {exc}", "ERROR")
+        finally:
+            with self._state_lock:
+                self._cancel_events.pop(task.id, None)
+                self._active_processes.pop(task.id, None)
 
     def run(self) -> None:
         return None
