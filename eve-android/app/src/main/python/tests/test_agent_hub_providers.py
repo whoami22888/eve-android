@@ -1,10 +1,11 @@
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
 
-from eve.agent_hub_agent import AgentHubAgent
+from eve.agent_hub_agent import AgentHubAgent, _safe_env
 from eve.model_provider import (
     AnthropicProvider,
     GeminiProvider,
@@ -14,6 +15,7 @@ from eve.model_provider import (
     _auto_model,
     load_model_config,
 )
+from eve.task_queue import Task
 from eve.workspace import ProjectWorkspace, WorkspaceError
 
 
@@ -86,6 +88,14 @@ class ProviderTests(unittest.TestCase):
             with self.assertRaises(WorkspaceError):
                 workspace.write("/absolute.txt", "blocked")
 
+    def test_agent_hub_accepts_kotlin_positional_data_dir(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with open(os.path.join(directory, "model_config.json"), "w", encoding="utf-8") as fh:
+                json.dump({"provider": "openai", "model": "auto", "api_key": "test"}, fh)
+            agent = AgentHubAgent(directory)
+            self.assertEqual(agent.data_dir, directory)
+            self.assertEqual(agent.provider.config.provider, "openai")
+
     def test_agent_hub_refreshes_provider_after_configuration_changes(self):
         with tempfile.TemporaryDirectory() as directory:
             with open(os.path.join(directory, "model_config.json"), "w", encoding="utf-8") as fh:
@@ -96,6 +106,21 @@ class ProviderTests(unittest.TestCase):
                 json.dump({"provider": "deepseek", "model": "auto", "api_key": "test"}, fh)
             agent._refresh_provider()
             self.assertEqual(agent.provider.config.provider, "deepseek")
+
+    def test_test_subprocess_environment_excludes_provider_secrets(self):
+        os.environ["EVE_MODEL_API_KEY"] = "super-secret"
+        try:
+            self.assertNotIn("EVE_MODEL_API_KEY", _safe_env())
+        finally:
+            os.environ.pop("EVE_MODEL_API_KEY", None)
+
+    def test_invalid_project_marks_task_failed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            agent = AgentHubAgent(data_dir=directory)
+            task = Task("agent_hub", "agent_hub", {"task": "x", "project": "../escape"})
+            agent.assign_task(task)
+            self.assertEqual(task.status, "failed")
+            self.assertIn("workspace", task.error.lower())
 
 
 if __name__ == "__main__":
