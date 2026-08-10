@@ -20,13 +20,10 @@ android {
         }
 
         python {
-            buildPython "python3"
+            version "3.11"
+            buildPython "python3.11"
             pip {
-                install "flask"
-                install "requests"
-                install "opencv-python-headless"
-                install "Pillow"
-                install "spacy"
+                install "-r", "requirements.txt"
             }
         }
     }
