@@ -1,11 +1,8 @@
 """Model-backed five-stage Agent Hub pipeline.
 
 Pipeline: Planner -> Coder -> Reviewer -> Tester -> Security.
-
-The provider is OpenAI-compatible and can point at a hosted provider or a
-local endpoint. The coding agent receives a sandboxed project workspace and
-can write only files inside that workspace. Agents exchange structured JSON
-artifacts rather than hidden global state.
+EVE remains the orchestrator; the selected provider can automatically choose
+an appropriate model per stage when the model setting is ``auto``.
 """
 
 from __future__ import annotations
@@ -67,8 +64,8 @@ class AgentHubAgent:
     def _call(self, stage: str, user: str) -> Dict:
         if self.provider is None:
             raise ModelProviderError("Configure the model provider before running Agent Hub")
-        self.log(f"Agent Hub: {stage} calling model")
-        return _json(self.provider.complete(_SYSTEM[stage], user))
+        self.log(f"Agent Hub: {stage} calling model (EVE routing)")
+        return _json(self.provider.complete(_SYSTEM[stage], user, stage=stage))
 
     def _apply_coder_files(self, workspace: ProjectWorkspace, result: Dict) -> List[str]:
         changed = []
