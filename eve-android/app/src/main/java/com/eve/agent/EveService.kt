@@ -35,7 +35,7 @@ class EveService : Service() {
         if (!isAccessibilityServiceEnabled()) startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         if (!Python.isStarted()) Python.start(AndroidPlatform(this))
         val py = Python.getInstance()
-        val env = py.getModule("os").get("environ")
+        val env = requireNotNull(py.getModule("os").get("environ")) { "Python os.environ is unavailable" }
         env.callAttr("__setitem__", "EVE_DATA_DIR", filesDir.absolutePath)
         applyModelProviderEnvironment(env)
 
@@ -83,7 +83,7 @@ class EveService : Service() {
         val py = try { if (!Python.isStarted()) Python.start(AndroidPlatform(this)); Python.getInstance() } catch (e: Exception) { callback("Python runtime unavailable: ${e.message}"); return }
         Thread {
             try {
-                val env = py.getModule("os").get("environ")
+                val env = requireNotNull(py.getModule("os").get("environ")) { "Python os.environ is unavailable" }
                 applyModelProviderEnvironment(env)
                 val config = ModelProviderStore(this).load()
                 if (config.model.isBlank()) { callback("EVE needs a model selection. Choose Auto or a model first."); return@Thread }
@@ -101,6 +101,6 @@ class EveService : Service() {
         return NotificationCompat.Builder(this, channelId).setContentTitle("EVE Agent").setContentText("EVE Agent Hub running").setSmallIcon(android.R.drawable.ic_dialog_info).setOngoing(true).build()
     }
     private fun isAccessibilityServiceEnabled(): Boolean { val value = Settings.Secure.getString(contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES) ?: return false; return value.contains("${packageName}/.VirtualAccessibilityService") }
-    private fun installUncaughtExceptionHandler() { val existing = Thread.getDefaultUncaughtExceptionHandler(); Thread.setDefaultUncaughtExceptionHandler { thread, throwable -> crashReporter.logException(throwable, "UncaughtException[${thread.name}]"); EveEventBus.emit(EveEvent.LogLine("CRASH in ${thread.name}: ${throwable.message}", "ERROR")); existing?.uncaughtException(thread, throwable) } }
+    private fun installUncaughtExceptionHandler() { val existing = Thread.getDefaultUncaughtExceptionHandler(); Thread.setDefaultUncaughtExceptionHandler { thread, throwable -> crashReporter.logException(throwable, "UncaughtException[${thread.name}]"); EveEventBus.emit(EveEvent.LogLine("CRASH in ${thread.name}: ${throwable.message}" , "ERROR")); existing?.uncaughtException(thread, throwable) } }
     companion object { private const val NOTIFICATION_ID = 1 }
 }
