@@ -1,73 +1,88 @@
 package com.eve.agent
 
+import android.app.Application
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
-import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.launch
 
-/**
- * EveViewModel is the single source of truth for UI state across all four tabs.
- *
- * It collects from [EveEventBus] and exposes stable [LiveData] so fragments
- * survive rotation without re-subscribing to the bus themselves.
- *
- * Scoped to the Activity lifecycle (obtained via `by activityViewModels()`
- * in each Fragment).
- */
-class EveViewModel : ViewModel() {
-
-    // ── Dashboard ────────────────────────────────────────────────────────────
+/** Activity-scoped source of truth for dashboard, pipeline and history state. */
+class EveViewModel(application: Application) : AndroidViewModel(application) {
+    private val pipelineStore = PipelineStore(application)
 
     private val _status = MutableLiveData("Connecting…")
-    /** One-line status displayed at the top of the Dashboard tab. */
     val status: LiveData<String> = _status
-
     private val _agentStatus = MutableLiveData("Agents: initialising…")
     val agentStatus: LiveData<String> = _agentStatus
-
-    // ── Log (last 200 lines, shown in Dashboard) ─────────────────────────────
-
     private val _logLines = MutableLiveData<List<String>>(emptyList())
     val logLines: LiveData<List<String>> = _logLines
-
-    // ── Task history (last 500 tasks, shown in History tab) ──────────────────
-
     private val _taskHistory = MutableLiveData<List<HistoryItem>>(emptyList())
     val taskHistory: LiveData<List<HistoryItem>> = _taskHistory
-
-    // ─────────────────────────────────────────────────────────────────────────
+    private val _pipelineRuns = MutableLiveData<List<PipelineStore.Run>>(pipelineStore.load())
+    val pipelineRuns: LiveData<List<PipelineStore.Run>> = _pipelineRuns
 
     init {
+        // A process death cannot safely resume a running Python request. Mark it
+        // interrupted rather than falsely showing it as active.
+        val recovered = pipelineStore.load().map {
+            if (it.status == "running" || it.status == "queued" || it.status == "paused") {
+                it.copy(status = "interrupted", message = "Runtime restarted; retry is available", updatedAt = System.currentTimeMillis())
+            } else it
+        }
+        recovered.forEach(pipelineStore::upsert)
+        _pipelineRuns.value = pipelineStore.load()
+
         viewModelScope.launch {
             EveEventBus.events.collect { event ->
                 when (event) {
-                    is EveEvent.StatusChanged -> {
-                        _status.postValue(event.status)
-                    }
+                    is EveEvent.StatusChanged -> _status.postValue(event.status)
                     is EveEvent.LogLine -> {
                         val line = "[${event.level}] ${event.message}"
                         val current = _logLines.value ?: emptyList()
                         _logLines.postValue((current + line).takeLast(200))
                     }
+                    is EveEvent.PipelineStage -> {
+                        val existing = pipelineStore.load().firstOrNull { it.taskId == event.taskId }
+                        pipelineStore.upsert(PipelineStore.Run(
+                            taskId = event.taskId,
+                            task = existing?.task ?: "Agent Hub pipeline",
+                            project = existing?.project ?: "default",
+                            stage = event.stage,
+                            status = event.status,
+                            progress = event.progress,
+                            message = event.message,
+                            output = existing?.output.orEmpty(),
+                            error = if (event.status == "failed") event.message else existing?.error.orEmpty(),
+                            startedAt = existing?.startedAt ?: System.currentTimeMillis(),
+                            updatedAt = System.currentTimeMillis()
+                        ))
+                        _pipelineRuns.postValue(pipelineStore.load())
+                    }
                     is EveEvent.TaskCompleted -> {
-                        val item = HistoryItem(
-                            taskId  = event.taskId,
-                            action  = event.action,
-                            result  = event.result,
-                            failed  = event.failed
-                        )
+                        val item = HistoryItem(event.taskId, event.action, event.result, event.failed)
                         val current = _taskHistory.value ?: emptyList()
-                        // Prepend newest first, cap at 500
                         _taskHistory.postValue((listOf(item) + current).take(500))
-                        // Reflect agent status
-                        _agentStatus.postValue(
-                            if (event.failed) "Last task failed: ${event.action}"
-                            else "Last task done: ${event.action}"
-                        )
+                        _agentStatus.postValue(if (event.failed) "Last task failed: ${event.action}" else "Last task done: ${event.action}")
+                        val existing = pipelineStore.load().firstOrNull { it.taskId == event.taskId }
+                        if (existing != null) {
+                            pipelineStore.upsert(existing.copy(
+                                status = if (event.failed) "failed" else "completed",
+                                progress = if (event.failed) existing.progress else 100,
+                                message = if (event.failed) event.result else "Pipeline completed",
+                                output = event.result,
+                                updatedAt = System.currentTimeMillis()
+                            ))
+                            _pipelineRuns.postValue(pipelineStore.load())
+                        }
                     }
                 }
             }
         }
+    }
+
+    fun registerPipeline(taskId: String, task: String, project: String = "default") {
+        pipelineStore.upsert(PipelineStore.Run(taskId, task, project, "Plan", "queued", 0, "Pipeline queued"))
+        _pipelineRuns.value = pipelineStore.load()
     }
 }
