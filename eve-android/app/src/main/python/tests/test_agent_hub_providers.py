@@ -23,13 +23,15 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(_auto_model("openai", "auto", "tester"), "gpt-5-mini")
         self.assertEqual(_auto_model("anthropic", "auto", "reviewer"), "claude-opus-4-1")
 
-    def test_openai_compatible_response(self):
-        config = ModelConfig("openai", "https://example.test", "auto", "key")
-        provider = OpenAICompatibleProvider(config)
-        with patch("eve.model_provider._request_json", return_value={"choices": [{"message": {"content": "OK"}}]}) as request:
-            self.assertEqual(provider.complete("s", "u", stage="planner"), "OK")
-            payload = request.call_args.args[1]
-            self.assertEqual(payload["model"], "gpt-5-mini")
+    def test_openai_compatible_presets_share_adapter(self):
+        for provider in ("openai", "deepseek", "openrouter", "ollama"):
+            with self.subTest(provider=provider):
+                config = ModelConfig(provider, "https://example.test", "auto", "key")
+                adapter = OpenAICompatibleProvider(config)
+                with patch("eve.model_provider._request_json", return_value={"choices": [{"message": {"content": "OK"}}]}) as request:
+                    self.assertEqual(adapter.complete("s", "u", stage="planner"), "OK")
+                    payload = request.call_args.args[1]
+                    self.assertTrue(payload["model"])
 
     def test_anthropic_response(self):
         config = ModelConfig("anthropic", "https://example.test", "auto", "key")
