@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from eve.agent_hub_agent import AgentHubAgent
 from eve.model_provider import (
     AnthropicProvider,
     GeminiProvider,
@@ -13,6 +14,7 @@ from eve.model_provider import (
     _auto_model,
     load_model_config,
 )
+from eve.workspace import ProjectWorkspace, WorkspaceError
 
 
 class ProviderTests(unittest.TestCase):
@@ -52,6 +54,19 @@ class ProviderTests(unittest.TestCase):
             with self.assertRaises(ModelProviderError):
                 load_model_config(directory)
 
+    def test_invalid_timeout_is_clean_configuration_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with open(os.path.join(directory, "model_config.json"), "w", encoding="utf-8") as fh:
+                json.dump({"provider": "openai", "model": "auto", "timeout_seconds": "bad"}, fh)
+            with self.assertRaises(ModelProviderError):
+                load_model_config(directory)
+
+    def test_timeout_is_clamped(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with open(os.path.join(directory, "model_config.json"), "w", encoding="utf-8") as fh:
+                json.dump({"provider": "openai", "model": "auto", "timeout_seconds": 9999}, fh)
+            self.assertEqual(load_model_config(directory).timeout_seconds, 600)
+
     def test_deepseek_v4_config_loads(self):
         with tempfile.TemporaryDirectory() as directory:
             with open(os.path.join(directory, "model_config.json"), "w", encoding="utf-8") as fh:
@@ -60,6 +75,31 @@ class ProviderTests(unittest.TestCase):
             self.assertEqual(config.provider, "deepseek")
             self.assertEqual(config.model, "auto")
             self.assertEqual(config.base_url, "https://api.deepseek.com")
+
+    def test_workspace_rejects_project_and_file_traversal(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(WorkspaceError):
+                ProjectWorkspace(directory, "../escape")
+            workspace = ProjectWorkspace(directory, "demo")
+            with self.assertRaises(WorkspaceError):
+                workspace.write("../escape.txt", "blocked")
+            with self.assertRaises(WorkspaceError):
+                workspace.write("/absolute.txt", "blocked")
+
+    def test_agent_hub_refreshes_provider_after_configuration_changes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with open(os.path.join(directory, "model_config.json"), "w", encoding="utf-8") as fh:
+                json.dump({"provider": "openai", "model": "auto", "api_key": "test"}, fh)
+            agent = AgentHubAgent(data_dir=directory)
+            self.assertIsNotNone(agent.provider)
+            with open(os.path.join(directory, "model_config.json"), "w", encoding="utf-8") as fh:
+                json.dump({"provider": "deepseek", "model": "auto", "api_key": "test"}, fh)
+            with patch("eve.agent_hub_agent.OpenAICompatibleProvider.complete", return_value='{"summary":"ok"}'):
+                # Refresh is exercised through _call; the provider must be rebuilt from the new config.
+                with patch.object(agent.provider, "complete", return_value='{"summary":"old"}') as old_complete:
+                    result = agent._call("planner", "test")
+                    old_complete.assert_not_called()
+                    self.assertEqual(result["summary"], "ok")
 
 
 if __name__ == "__main__":
