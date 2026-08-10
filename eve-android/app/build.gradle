@@ -5,11 +5,12 @@ plugins {
 }
 
 android {
+    namespace "com.eve.agent"
     compileSdk 34
 
     defaultConfig {
         applicationId "com.eve.agent"
-        minSdk 26           // API 26 minimum — WorkManager, Chaquopy, foreground services
+        minSdk 26
         targetSdk 34
         versionCode 1
         versionName "1.0"
@@ -46,7 +47,6 @@ android {
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
         debug {
-            // Debug builds do not minify for faster iteration
             minifyEnabled false
         }
     }
@@ -80,12 +80,7 @@ dependencies {
     implementation 'net.openid:appauth:0.11.1'
     implementation 'org.tensorflow:tensorflow-lite:2.14.0'
     implementation 'org.tensorflow:tensorflow-lite-support:0.4.4'
-    // NOTE: kotlin-scripting-jsr223 / kotlin-scripting-jvm-host were removed.
-    // They add ~30 MB to the APK and are not used by any current code path.
-    // Re-add them only if runtime .kts evaluation is explicitly required.
     implementation 'androidx.legacy:legacy-support-v4:1.0.0'
-
-    // Kotlin coroutines — required for SharedFlow (EveEventBus) and viewModelScope
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3'
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-core:1.7.3'
 }
