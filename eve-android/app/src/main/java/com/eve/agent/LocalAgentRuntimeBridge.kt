@@ -47,6 +47,8 @@ class LocalAgentRuntimeBridge(context: Context) {
                 running = false, progress = if (event.failed) 0 else 100,
                 lastMessage = if (event.failed) "Agent Hub failed: ${event.result.take(300)}" else "Agent Hub completed"
             )
+            // Exhaustive branch - handles any future EveEvent subtypes gracefully
+            else -> {} // No-op for unknown event types
         }
     }
 
