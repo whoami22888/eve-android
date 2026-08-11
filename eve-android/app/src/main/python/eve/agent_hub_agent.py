@@ -1,7 +1,7 @@
 """Model-backed, bounded five-stage Agent Hub pipeline."""
 
 from __future__ import annotations
-import json, os, re, subprocess, threading, time
+import json, os, re, subprocess, threading, time, urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List
 from .model_provider import ModelProviderError, build_provider
@@ -19,7 +19,15 @@ _SYSTEM = {
 }
 _ALLOWED_TEST_COMMANDS = ("./gradlew test", "./gradlew :app:test", "./gradlew lint", "./gradlew :app:testDebugUnitTest", "./gradlew :app:assembleDebug", "npm test", "npm run test", "npm run lint", "pytest", "python -m pytest")
 _SAFE_ENV_KEYS = ("PATH", "HOME", "TMPDIR", "TMP", "TEMP", "LANG", "LC_ALL", "USER", "JAVA_HOME", "ANDROID_HOME", "ANDROID_SDK_ROOT", "GRADLE_USER_HOME")
+
+# Loopback hosts whose base URLs are treated as local providers.
+# Local providers may receive full workspace content; remote providers receive
+# only a file listing unless the user has explicitly set workspace_content_consent=true
+# in model_config.json.
+_LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1", "0.0.0.0"}
+
 _ACTIVE_AGENT = None
+
 
 def _json(text: str) -> Dict:
     match = re.search(r"\{.*\}", text, re.DOTALL)
@@ -27,12 +35,24 @@ def _json(text: str) -> Dict:
     try: return json.loads(match.group(0))
     except json.JSONDecodeError: return {"summary": text.strip()}
 
+
 def _safe_env() -> Dict[str, str]: return {key: value for key, value in os.environ.items() if key in _SAFE_ENV_KEYS}
+
+
+def _is_local_base_url(base_url: str) -> bool:
+    """Return True when base_url resolves to a loopback/LAN address."""
+    try:
+        host = urllib.parse.urlparse(base_url).hostname or ""
+        return host in _LOCAL_HOSTS or host.endswith(".local")
+    except Exception:
+        return False
+
 
 def refresh_default_provider(data_dir: str) -> bool:
     global _ACTIVE_AGENT
     if _ACTIVE_AGENT is not None and os.path.abspath(_ACTIVE_AGENT.data_dir) == os.path.abspath(data_dir): _ACTIVE_AGENT._refresh_provider(); return True
     return False
+
 
 class AgentHubAgent:
     def __init__(self, log=None, data_dir=None):
@@ -45,6 +65,51 @@ class AgentHubAgent:
     def _refresh_provider(self):
         try: self.provider = build_provider(self.data_dir)
         except ModelProviderError as exc: self.provider = None; self.log(f"Model provider not configured: {exc}", "WARN")
+
+    def _provider_is_local(self) -> bool:
+        """True when the active provider is a loopback/LAN endpoint."""
+        config = getattr(self.provider, "config", None)
+        base_url = getattr(config, "base_url", "") if config else ""
+        return _is_local_base_url(base_url)
+
+    def _provider_has_workspace_consent(self) -> bool:
+        """True when the user explicitly opted in to sharing workspace content with remote providers."""
+        # workspace_content_consent must be set to true in model_config.json.
+        # See SECURITY_AUDIT_CHECKLIST.md §Privacy for details.
+        try:
+            import os as _os
+            path = _os.path.join(self.data_dir, "model_config.json")
+            if _os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as fh:
+                    cfg = json.load(fh) or {}
+                return bool(cfg.get("workspace_content_consent", False))
+        except Exception:
+            pass
+        return False
+
+    def _workspace_context(self, workspace: ProjectWorkspace) -> str:
+        """Return workspace context appropriate for the active provider.
+
+        - Local providers (loopback): full bounded snapshot (≤80 files × 50 KB).
+        - Remote providers: file listing only, unless workspace_content_consent=true
+          is set in model_config.json.
+
+        This prevents workspace source files from being sent to external cloud
+        services without the user's explicit consent.
+        """
+        if self._provider_is_local() or self._provider_has_workspace_consent():
+            return workspace.snapshot()
+        files = workspace.list_files()
+        if not files:
+            return "(workspace is empty)"
+        listing = "\n".join(files)
+        return (
+            "WORKSPACE FILES (content withheld — workspace_content_consent not enabled):\n"
+            + listing
+            + "\n\nTo allow this provider to read file contents, set "
+            + '"workspace_content_consent": true in model_config.json.'
+        )
+
     def set_task_queue(self, q): self.task_queue = q
     def can_handle(self, task: Task) -> bool: return task.action in {"agent_hub", "agent_hub_control"}
     def _emit(self, method: str, *args):
@@ -140,12 +205,18 @@ class AgentHubAgent:
     def _execute_pipeline(self,task,spec,start_stage="planner"):
         prompt=str(spec.get("prompt","")).strip(); project=str(spec.get("project","default")).strip() or "default"; task.status="running"; stage_index={name:i for i,name in enumerate(STAGES)}; start=stage_index.get(start_stage,0)
         try:
-            workspace=ProjectWorkspace(self.data_dir,project); snapshot=workspace.snapshot(); context={}
-            if start<=0: self._emit_stage(task.id,"planner","running",10,"Building implementation plan"); context["plan"]=self._call("planner",f"USER REQUEST:\n{prompt}\n\nWORKSPACE:\n{snapshot}",task.id)
-            if start<=1: self._emit_stage(task.id,"researcher","running",25,"Inspecting workspace and compatibility"); context["research"]=self._call("researcher",f"REQUEST:\n{prompt}\n\nPLAN:\n{json.dumps(context.get('plan',{}))}\n\nWORKSPACE:\n{snapshot}",task.id)
-            if start<=2: self._emit_stage(task.id,"coder","running",45,"Implementing planned changes"); context["coder"]=self._call("coder",f"REQUEST:\n{prompt}\n\nPLAN:\n{json.dumps(context.get('plan',{}))}\n\nRESEARCH:\n{json.dumps(context.get('research',{}))}\n\nWORKSPACE:\n{snapshot}",task.id); context["changed"]=self._apply_coder_files(workspace,context["coder"]); snapshot=workspace.snapshot()
-            if start<=3: self._emit_stage(task.id,"tester","running",65,"Preparing and running safe tests"); test_plan=self._call("tester",f"REQUEST:\n{prompt}\n\nCHANGED:\n{context.get('changed',[])}\n\nWORKSPACE:\n{snapshot}",task.id); context["tests"]=self._run_tests(workspace,test_plan.get("commands",[]),task.id)
-            if start<=4: self._emit_stage(task.id,"reviewer","running",85,"Final implementation and security review"); context["review"]=self._call("reviewer",f"REQUEST:\n{prompt}\n\nCHANGED:\n{context.get('changed',[])}\n\nTEST RESULTS:\n{json.dumps(context.get('tests',[]))}\n\nWORKSPACE:\n{snapshot}",task.id)
+            workspace=ProjectWorkspace(self.data_dir,project); context={}
+            # _workspace_context() enforces the privacy policy: remote providers
+            # only receive a file listing unless workspace_content_consent=true.
+            workspace_ctx=self._workspace_context(workspace)
+            if start<=0: self._emit_stage(task.id,"planner","running",10,"Building implementation plan"); context["plan"]=self._call("planner",f"USER REQUEST:\n{prompt}\n\nWORKSPACE:\n{workspace_ctx}",task.id)
+            if start<=1: self._emit_stage(task.id,"researcher","running",25,"Inspecting workspace and compatibility"); context["research"]=self._call("researcher",f"REQUEST:\n{prompt}\n\nPLAN:\n{json.dumps(context.get('plan',{}))}\n\nWORKSPACE:\n{workspace_ctx}",task.id)
+            if start<=2:
+                self._emit_stage(task.id,"coder","running",45,"Implementing planned changes"); context["coder"]=self._call("coder",f"REQUEST:\n{prompt}\n\nPLAN:\n{json.dumps(context.get('plan',[]))}\n\nRESEARCH:\n{json.dumps(context.get('research',[]))}\n\nWORKSPACE:\n{workspace_ctx}",task.id); context["changed"]=self._apply_coder_files(workspace,context["coder"])
+                # Refresh workspace context after coder may have written files.
+                workspace_ctx=self._workspace_context(workspace)
+            if start<=3: self._emit_stage(task.id,"tester","running",65,"Preparing and running safe tests"); test_plan=self._call("tester",f"REQUEST:\n{prompt}\n\nCHANGED:\n{context.get('changed',[])}\n\nWORKSPACE:\n{workspace_ctx}",task.id); context["tests"]=self._run_tests(workspace,test_plan.get("commands",[]),task.id)
+            if start<=4: self._emit_stage(task.id,"reviewer","running",85,"Final implementation and security review"); context["review"]=self._call("reviewer",f"REQUEST:\n{prompt}\n\nCHANGED:\n{context.get('changed',[])}\n\nTEST RESULTS:\n{json.dumps(context.get('tests',[]))}\n\nWORKSPACE:\n{workspace_ctx}",task.id)
             if self._cancelled(task.id): raise RuntimeError("Agent Hub task cancelled")
             task.result=self._redact(json.dumps({"project":project,"stages":context},ensure_ascii=False)); task.status="completed"; task.completed_at=time.time(); self._emit_stage(task.id,"reviewer","completed",100,"Pipeline completed"); self._complete(task)
         except (ModelProviderError,WorkspaceError,OSError,ValueError,RuntimeError) as exc:
