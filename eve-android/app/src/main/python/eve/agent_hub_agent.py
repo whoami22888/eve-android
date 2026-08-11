@@ -3,7 +3,7 @@
 from __future__ import annotations
 import json, os, re, subprocess, threading, time
 from concurrent.futures import ThreadPoolExecutor
-from typing import Dict, List
+from typing import Dict
 from .model_provider import ModelProviderError, build_provider
 from .task_queue import Task
 from .workspace import ProjectWorkspace, WorkspaceError
@@ -152,4 +152,3 @@ class AgentHubAgent:
             task.status="failed"; task.error=self._redact(str(exc)); self._emit_stage(task.id,self._task_stage.get(task.id,start_stage),"failed",max(1,stage_index.get(self._task_stage.get(task.id,start_stage),0)*20),task.error); self.log(f"Agent Hub failed: {task.error}","ERROR"); self._complete(task)
         finally:
             with self._state_lock: self._cancel_events.pop(task.id,None); self._pause_events.pop(task.id,None); self._active_processes.pop(task.id,None)
-    def run(self): return None
