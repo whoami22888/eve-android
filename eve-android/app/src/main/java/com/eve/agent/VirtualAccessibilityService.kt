@@ -1,6 +1,7 @@
 package com.eve.agent
 
 import android.accessibilityservice.AccessibilityService
+import android.annotation.SuppressLint
 import android.graphics.Bitmap
 import android.os.Build
 import android.view.Display
@@ -66,6 +67,7 @@ class VirtualAccessibilityService : AccessibilityService() {
      * Uses the framework's [AccessibilityService.takeScreenshot] (API 30+).
      * Returns null on older API levels or if the capture times out.
      */
+    @SuppressLint("NewApi")
     fun requestScreenshot(): Bitmap? {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return null   // API 30+
 
