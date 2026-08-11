@@ -28,16 +28,22 @@ android {
 
     signingConfigs {
         release {
-            storeFile file("../eve.keystore")
-            storePassword System.getenv("KEYSTORE_PASS") ?: "yourStorePass"
-            keyAlias "eve"
-            keyPassword System.getenv("KEY_PASS") ?: "yourKeyPass"
+            // Signing values come exclusively from environment variables set by CI.
+            // Never hard-code keystore paths or credentials here.
+            // See .github/workflows/android-release.yml for the CI setup.
+            def keystorePath = System.getenv("EVE_KEYSTORE_PATH")
+            storeFile keystorePath ? file(keystorePath) : null
+            storePassword System.getenv("EVE_KEYSTORE_PASSWORD") ?: ""
+            keyAlias System.getenv("EVE_KEY_ALIAS") ?: "eve"
+            keyPassword System.getenv("EVE_KEY_PASSWORD") ?: ""
         }
     }
 
     buildTypes {
         release {
-            signingConfig signingConfigs.release
+            // Only apply signing config when the keystore path is provided.
+            // Without it, assembleRelease produces an unsigned APK for local inspection.
+            signingConfig System.getenv("EVE_KEYSTORE_PATH") ? signingConfigs.release : null
             minifyEnabled true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
