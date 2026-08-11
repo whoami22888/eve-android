@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List
 from .model_provider import ModelProviderError, build_provider
 from .task_queue import Task
+from .task_state import TaskState, require_valid_transition
 from .workspace import ProjectWorkspace, WorkspaceError
 
 STAGES = ("planner", "researcher", "coder", "tester", "reviewer")
@@ -27,6 +28,11 @@ _SAFE_ENV_KEYS = ("PATH", "HOME", "TMPDIR", "TMP", "TEMP", "LANG", "LC_ALL", "US
 _LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1", "0.0.0.0"}
 
 _ACTIVE_AGENT = None
+
+
+class _TaskCancelled(RuntimeError):
+    """Internal signal that a pipeline task was cancelled by the user."""
+
 
 
 def _json(text: str) -> Dict:
@@ -60,11 +66,73 @@ class AgentHubAgent:
         if isinstance(log, str) and data_dir is None: data_dir, log = log, None
         self.task_queue = None; self.log = log if callable(log) else (lambda message, level="INFO": None); self.data_dir = data_dir or os.environ.get("EVE_DATA_DIR") or "."; self.provider = None
         self._cancel_events = {}; self._pause_events = {}; self._active_processes = {}; self._task_objects = {}; self._task_specs = {}; self._task_stage = {}; self._state_lock = threading.Lock(); self._executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="eve-agent-hub")
+        self._store_path = os.path.join(self.data_dir, "agent_hub_tasks.json")
         self._refresh_provider(); _ACTIVE_AGENT = self
 
     def _refresh_provider(self):
         try: self.provider = build_provider(self.data_dir)
         except ModelProviderError as exc: self.provider = None; self.log(f"Model provider not configured: {exc}", "WARN")
+
+    def _set_status(self, task, new_status: str) -> None:
+        """Transition a task through the formal state machine and persist it."""
+        current = task.status if task.status in {s.value for s in TaskState} else "queued"
+        if current != new_status:
+            require_valid_transition(TaskState(current), TaskState(new_status))
+            task.status = new_status
+        self._persist_tasks()
+
+    def _persist_tasks(self) -> None:
+        """Atomically persist task specs/statuses so a process restart can recover them."""
+        try:
+            with self._state_lock:
+                records = [
+                    {
+                        "id": task_id,
+                        "status": task.status,
+                        "stage": self._task_stage.get(task_id, "planner"),
+                        "spec": self._task_specs.get(task_id, {}),
+                    }
+                    for task_id, task in self._task_objects.items()
+                ]
+            tmp = self._store_path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(records, fh)
+            os.replace(tmp, self._store_path)
+        except OSError as exc:
+            self.log(f"Agent Hub persistence failed: {exc}", "WARN")
+
+    def recover_interrupted_tasks(self) -> int:
+        """Mark persisted non-terminal tasks as interrupted after a process restart.
+
+        Returns the number of recovered tasks. Recovered tasks can be retried
+        via the agent_hub_control retry command.
+        """
+        try:
+            with open(self._store_path, "r", encoding="utf-8") as fh:
+                records = json.load(fh)
+        except (OSError, ValueError):
+            return 0
+        recovered = 0
+        with self._state_lock:
+            for record in records if isinstance(records, list) else []:
+                try:
+                    task_id = str(record["id"]); status = str(record["status"])
+                    spec = record.get("spec") or {}; stage = str(record.get("stage", "planner"))
+                except (KeyError, TypeError, AttributeError):
+                    continue
+                if status not in {"queued", "running", "paused", "cancelling"}:
+                    continue
+                task = Task("agent_hub", "agent_hub", {"task": str(spec.get("prompt", "")), "project": str(spec.get("project", "default"))}, task_id)
+                task.status = "interrupted"
+                task.error = "Process restarted before the task finished"
+                self._task_objects[task_id] = task
+                self._task_specs[task_id] = {"prompt": str(spec.get("prompt", "")), "project": str(spec.get("project", "default"))}
+                self._task_stage[task_id] = stage
+                recovered += 1
+        if recovered:
+            self._persist_tasks()
+            self.log(f"Agent Hub recovered {recovered} interrupted task(s)", "WARN")
+        return recovered
 
     def _provider_is_local(self) -> bool:
         """True when the active provider is a loopback/LAN endpoint."""
@@ -124,12 +192,12 @@ class AgentHubAgent:
     def _wait_if_paused(self, task_id):
         while True:
             with self._state_lock: pause = self._pause_events.get(task_id); cancelled = self._cancel_events.get(task_id)
-            if cancelled and cancelled.is_set(): raise RuntimeError("Agent Hub task cancelled")
+            if cancelled and cancelled.is_set(): raise _TaskCancelled("Agent Hub task cancelled")
             if pause is None or not pause.is_set(): return
             self._emit_stage(task_id, self._task_stage.get(task_id, "planner"), "paused", 0, "Pipeline paused"); time.sleep(0.2)
     def _call(self, stage, user, task_id=""):
         self._wait_if_paused(task_id)
-        if task_id and self._cancelled(task_id): raise RuntimeError("Agent Hub task cancelled")
+        if task_id and self._cancelled(task_id): raise _TaskCancelled("Agent Hub task cancelled")
         self._refresh_provider()
         if self.provider is None: raise ModelProviderError("Configure the model provider before running Agent Hub")
         return _json(self.provider.complete(_SYSTEM[stage], user, stage=stage))
@@ -189,7 +257,7 @@ class AgentHubAgent:
                 task.result=f"Cancellation requested for {task_id}"
             elif command=="retry" and target_task.status in {"failed","interrupted"}:
                 with self._state_lock: self._cancel_events[task_id]=threading.Event(); self._pause_events[task_id]=threading.Event()
-                target_task.status="running"; start=self._task_stage.get(task_id,"planner"); start={v.lower():k for k,v in _STAGE_LABELS.items()}.get(start,start); self._executor.submit(self._execute_pipeline,target_task,self._task_specs.get(task_id,{}),start); task.result=f"Retry started for {task_id}"
+                self._set_status(target_task,"queued"); start=self._task_stage.get(task_id,"planner"); start={v.lower():k for k,v in _STAGE_LABELS.items()}.get(start,start); self._executor.submit(self._execute_pipeline,target_task,self._task_specs.get(task_id,{}),start); task.result=f"Retry started for {task_id}"
             else: matched=False
         if not matched: task.status="failed"; task.error=f"Unknown or unavailable Agent Hub control: {command}"; return
         task.status="completed"
@@ -201,9 +269,10 @@ class AgentHubAgent:
         except WorkspaceError as exc: task.status="failed"; task.error=str(exc); return
         task.status="queued"
         with self._state_lock: self._cancel_events[task.id]=threading.Event(); self._pause_events[task.id]=threading.Event(); self._task_objects[task.id]=task; self._task_specs[task.id]={"prompt":prompt,"project":project}
+        self._persist_tasks()
         self._emit_stage(task.id,"planner","queued",0,"Pipeline queued"); self._executor.submit(self._execute_pipeline,task,{"prompt":prompt,"project":project},"planner")
     def _execute_pipeline(self,task,spec,start_stage="planner"):
-        prompt=str(spec.get("prompt","")).strip(); project=str(spec.get("project","default")).strip() or "default"; task.status="running"; stage_index={name:i for i,name in enumerate(STAGES)}; start=stage_index.get(start_stage,0)
+        prompt=str(spec.get("prompt","")).strip(); project=str(spec.get("project","default")).strip() or "default"; self._set_status(task,"running"); stage_index={name:i for i,name in enumerate(STAGES)}; start=stage_index.get(start_stage,0)
         try:
             workspace=ProjectWorkspace(self.data_dir,project); context={}
             # _workspace_context() enforces the privacy policy: remote providers
@@ -215,12 +284,18 @@ class AgentHubAgent:
                 self._emit_stage(task.id,"coder","running",45,"Implementing planned changes"); context["coder"]=self._call("coder",f"REQUEST:\n{prompt}\n\nPLAN:\n{json.dumps(context.get('plan',[]))}\n\nRESEARCH:\n{json.dumps(context.get('research',[]))}\n\nWORKSPACE:\n{workspace_ctx}",task.id); context["changed"]=self._apply_coder_files(workspace,context["coder"])
                 # Refresh workspace context after coder may have written files.
                 workspace_ctx=self._workspace_context(workspace)
-            if start<=3: self._emit_stage(task.id,"tester","running",65,"Preparing and running safe tests"); test_plan=self._call("tester",f"REQUEST:\n{prompt}\n\nCHANGED:\n{context.get('changed',[])}\n\nWORKSPACE:\n{workspace_ctx}",task.id); context["tests"]=self._run_tests(workspace,test_plan.get("commands",[]),task.id)
+            if start<=3:
+                self._emit_stage(task.id,"tester","running",65,"Preparing and running safe tests"); test_plan=self._call("tester",f"REQUEST:\n{prompt}\n\nCHANGED:\n{context.get('changed',[])}\n\nWORKSPACE:\n{workspace_ctx}",task.id); context["tests"]=self._run_tests(workspace,test_plan.get("commands",[]),task.id)
+                failed_tests=[r for r in context["tests"] if r.get("status") in {"failed","error"}]
+                if failed_tests: raise RuntimeError(f"Tester stage failed: {failed_tests[0].get('command','test command')} exited with {failed_tests[0].get('status')}")
             if start<=4: self._emit_stage(task.id,"reviewer","running",85,"Final implementation and security review"); context["review"]=self._call("reviewer",f"REQUEST:\n{prompt}\n\nCHANGED:\n{context.get('changed',[])}\n\nTEST RESULTS:\n{json.dumps(context.get('tests',[]))}\n\nWORKSPACE:\n{workspace_ctx}",task.id)
-            if self._cancelled(task.id): raise RuntimeError("Agent Hub task cancelled")
-            task.result=self._redact(json.dumps({"project":project,"stages":context},ensure_ascii=False)); task.status="completed"; task.completed_at=time.time(); self._emit_stage(task.id,"reviewer","completed",100,"Pipeline completed"); self._complete(task)
+            if self._cancelled(task.id): raise _TaskCancelled("Agent Hub task cancelled")
+            task.result=self._redact(json.dumps({"project":project,"stages":context},ensure_ascii=False)); self._set_status(task,"completed"); task.completed_at=time.time(); self._emit_stage(task.id,"reviewer","completed",100,"Pipeline completed"); self._complete(task)
+        except _TaskCancelled as exc:
+            if task.status == "running": self._set_status(task,"cancelling")
+            self._set_status(task,"cancelled"); task.error=self._redact(str(exc)); self._emit_stage(task.id,self._task_stage.get(task.id,start_stage),"cancelled",0,task.error); self.log(f"Agent Hub cancelled: {task.error}"); self._complete(task)
         except (ModelProviderError,WorkspaceError,OSError,ValueError,RuntimeError) as exc:
-            task.status="failed"; task.error=self._redact(str(exc)); self._emit_stage(task.id,self._task_stage.get(task.id,start_stage),"failed",max(1,stage_index.get(self._task_stage.get(task.id,start_stage),0)*20),task.error); self.log(f"Agent Hub failed: {task.error}","ERROR"); self._complete(task)
+            self._set_status(task,"failed"); task.error=self._redact(str(exc)); self._emit_stage(task.id,self._task_stage.get(task.id,start_stage),"failed",max(1,stage_index.get(self._task_stage.get(task.id,start_stage),0)*20),task.error); self.log(f"Agent Hub failed: {task.error}","ERROR"); self._complete(task)
         finally:
             with self._state_lock: self._cancel_events.pop(task.id,None); self._pause_events.pop(task.id,None); self._active_processes.pop(task.id,None)
     def run(self): return None

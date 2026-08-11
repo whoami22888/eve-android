@@ -9,7 +9,9 @@ OpenCV / spaCy / network-probe logic as needed.
 """
 
 import logging
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 from .task_queue import Task, TaskQueue
 
@@ -23,6 +25,7 @@ class HacxgentAgent:
     def __init__(self):
         self.task_queue: TaskQueue = None
         self._running = False
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="eve-hacxgent")
 
     # ------------------------------------------------------------------
     # Agent protocol
@@ -37,6 +40,11 @@ class HacxgentAgent:
         return any(kw in task.action.lower() for kw in self.HANDLED_KEYWORDS)
 
     def assign_task(self, task: Task) -> None:
+        """Queue the task on a bounded worker so the dispatcher never blocks."""
+        task.status = "queued"
+        self._executor.submit(self._run_task, task)
+
+    def _run_task(self, task: Task) -> None:
         task.status = "running"
         try:
             result = self._execute(task)
@@ -46,6 +54,19 @@ class HacxgentAgent:
             task.error = str(exc)
             task.status = "failed"
             logger.error("Task %s failed: %s", task.id, exc)
+        finally:
+            self._complete(task)
+
+    def _complete(self, task: Task) -> None:
+        """Report completion through the Kotlin bridge (no-op off-device)."""
+        try:
+            from java import jclass
+            jclass("com.eve.agent.EveKotlinBridge").onTaskCompleted(
+                task.id, task.action, str(task.error if task.status == "failed" else (task.result or "")),
+                task.status == "failed",
+            )
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # Execution
@@ -90,3 +111,8 @@ class HacxgentAgent:
         logger.info("HacxgentAgent ready")
         while self._running:
             time.sleep(5)
+
+    def stop(self) -> None:
+        """Stop the idle loop and shut down the task worker."""
+        self._running = False
+        self._executor.shutdown(wait=False, cancel_futures=True)
