@@ -28,10 +28,15 @@ android {
 
     signingConfigs {
         release {
-            storeFile file("../eve.keystore")
-            storePassword System.getenv("KEYSTORE_PASS") ?: "yourStorePass"
-            keyAlias "eve"
-            keyPassword System.getenv("KEY_PASS") ?: "yourKeyPass"
+            def keystoreFile = file("../eve.keystore")
+            def storePassword = System.getenv("KEYSTORE_PASS")
+            def keyPassword = System.getenv("KEY_PASS")
+            if (keystoreFile.exists() && storePassword && keyPassword) {
+                storeFile keystoreFile
+                this.storePassword storePassword
+                keyAlias "eve"
+                this.keyPassword keyPassword
+            }
         }
     }
 
@@ -49,6 +54,21 @@ android {
         targetCompatibility JavaVersion.VERSION_1_8
     }
     kotlinOptions { jvmTarget = "1.8" }
+}
+
+tasks.register("verifyReleaseSigning") {
+    doLast {
+        def keystoreFile = file("../eve.keystore")
+        def storePassword = System.getenv("KEYSTORE_PASS")
+        def keyPassword = System.getenv("KEY_PASS")
+        if (!keystoreFile.exists() || !storePassword || !keyPassword) {
+            throw new GradleException("Release signing is not configured. Provide eve.keystore, KEYSTORE_PASS, and KEY_PASS; refusing to build an unsigned release.")
+        }
+    }
+}
+
+tasks.matching { it.name.toLowerCase().contains("release") }.configureEach {
+    dependsOn("verifyReleaseSigning")
 }
 
 dependencies {
