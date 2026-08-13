@@ -67,7 +67,7 @@ tasks.register("verifyReleaseSigning") {
     }
 }
 
-tasks.matching { it.name.toLowerCase().contains("release") }.configureEach {
+tasks.matching { it.name.toLowerCase().contains("release") && it.name != "verifyReleaseSigning" }.configureEach {
     dependsOn("verifyReleaseSigning")
 }
 
