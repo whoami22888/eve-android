@@ -1,8 +1,12 @@
 import json
 import os
+import sys
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from eve.agent_hub_agent import AgentHubAgent, _safe_env
 from eve.model_provider import (
