@@ -377,3 +377,59 @@ A focused regression test injected an unexpected `KeyError` from an otherwise co
 Chaquopy Python 3.11 availability, Android SDK XML-version, Chaquopy incremental watcher, TensorFlow namespace, and debug native-library stripping messages remain non-blocking toolchain/dependency warnings because the full debug build passed. Kotlin’s redundant `else`, deprecated permission API, and unused SkillSandbox/VirtualComputer values remain deferred warnings; no demonstrated runtime defect required scope expansion.
 
 No release APK was produced because valid signing material was not available. No device/emulator smoke test was performed because no Android target was attached. The next useful milestone remains Android device/emulator lifecycle and instrumentation testing rather than a broad architectural rewrite.
+
+
+---
+
+## Accessibility Lifecycle JVM Coverage — 2026-08-16
+
+**Starting commit:** `138d9930802977f3b073ab260f36f96722193ca8` (`fix: report unexpected agent hub failures`) on clean, synchronized `main` / `origin/main`.
+
+### Environment and baseline
+
+The project was verified with Java 17.0.19 for Gradle, CPython 3.11.15 for Chaquopy/Python checks, Node 22.13.0, pnpm 11.21.0, Gradle 8.2, and Android SDK API 34 / Build-Tools 34.0.0. The shell-default Java 21 and Python 3.12 were observed but not used for the verified Android/Python build commands. No Android device or emulator was attached.
+
+| Check | Result | Detail |
+|---|---|---|
+| Python compile | PASS | `python3.11 -m compileall -q eve-android/app/src/main/python` completed successfully. |
+| Python tests | PASS | 19 tests passed with `ResourceWarning` treated as an error. |
+| Baseline `:app:testDebugUnitTest` | PASS / `NO-SOURCE` | The task completed before this milestone’s JVM test was added. |
+| Baseline debug APK build | PASS | `:app:assembleDebug` completed successfully. |
+| Device/emulator availability | BLOCKED | `adb devices -l` returned no target. No install, launch, foreground-service, Hermes, Accessibility, or logcat device smoke test was performed. |
+
+### Confirmed lifecycle defect and repair
+
+`VirtualAccessibilityService` registered itself with the `VirtualComputer` singleton on connection but did not clear that singleton reference when the service unbound or was destroyed. A stale service instance could therefore remain selected after Accessibility was disabled or the framework replaced a service connection. This is a lifecycle correctness defect affecting the current milestone.
+
+A small synchronized `AccessibilityServiceRegistry` now tracks the active accessibility service by identity. It clears only the currently active service, ensuring that a stale unbind callback cannot remove a newer active connection. `VirtualComputer` uses the registry for capture and input operations. `VirtualAccessibilityService` clears its registration in both `onUnbind` and `onDestroy`; an uninitialised `VirtualComputer` is handled without a crash.
+
+### New JVM coverage
+
+| Test | Result | What it proves |
+|---|---|---|
+| `AccessibilityServiceRegistryTest.unbindClearsOnlyTheCurrentService` | PASS | An unbind clears the active service; an unrelated/stale unbind cannot clear the active or newer service connection. |
+
+The app now has executable Android JVM test coverage: the final `:app:testDebugUnitTest` result contained one test, zero failures, and zero errors.
+
+### Final verification
+
+| Check | Result |
+|---|---|
+| Python compile | PASS |
+| Python regression suite | PASS — 19 tests |
+| Android JVM tests | PASS — 1 test, 0 failures, 0 errors |
+| Debug build | PASS — debug APK produced at `eve-android/app/build/outputs/apk/debug/app-debug.apk` (32,055,278 bytes during final verification) |
+| Hermes localhost binding and bearer-token comparison | SOURCE INSPECTION — preserved |
+| Agent Hub allowlisted non-shell execution | SOURCE INSPECTION — preserved |
+| Secret scan | SOURCE INSPECTION — no hard-coded credential was found; matches were configuration keys, encryption storage names, provider handling, examples, or tests. |
+| Release signing validation | BLOCKED AS INTENDED — missing signing material triggers the fail-closed message; no circular dependency. |
+| Device/emulator lifecycle tests | BLOCKED — no target available. |
+| `git diff --check` | PASS |
+
+### Warnings
+
+Chaquopy Python 3.11 availability, SDK XML version, and incremental watcher messages remain **non-blocking toolchain warnings**. TensorFlow namespace and debug native-library stripping messages remain **non-blocking third-party/debug packaging warnings**. The existing unused `args` parameter in `VirtualComputer` remains **non-blocking actionable** but was not changed because it is unrelated to the confirmed lifecycle defect. No security control, release-signing guard, Hermes authentication, loopback binding, task idempotency, allowlist, timeout, or cancellation behavior was weakened.
+
+### Remaining blocker and next step
+
+The code/build/JVM-test portion of the lifecycle milestone is verified. The device-only portion remains blocked until a physical device or emulator is attached. The next required action is actual-device instrumentation: install the debug APK, launch it, exercise foreground-service start/stop/restart, verify Accessibility-disabled behavior, verify Hermes token/port readiness and controlled task submission/retry, cancel a safe task, and collect logcat for crashes or ANRs.

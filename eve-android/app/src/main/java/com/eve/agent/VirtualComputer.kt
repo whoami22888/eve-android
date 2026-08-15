@@ -21,7 +21,7 @@ import java.util.concurrent.TimeUnit
  */
 class VirtualComputer private constructor(private val context: Context) {
 
-    private var accessibilityService: VirtualAccessibilityService? = null
+    private val accessibilityServices = AccessibilityServiceRegistry<VirtualAccessibilityService>()
 
     private val okHttp = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
@@ -33,7 +33,11 @@ class VirtualComputer private constructor(private val context: Context) {
     // -------------------------------------------------------------------------
 
     fun setAccessibilityService(service: VirtualAccessibilityService) {
-        this.accessibilityService = service
+        accessibilityServices.bind(service)
+    }
+
+    fun clearAccessibilityService(service: VirtualAccessibilityService) {
+        accessibilityServices.unbind(service)
     }
 
     // -------------------------------------------------------------------------
@@ -41,7 +45,7 @@ class VirtualComputer private constructor(private val context: Context) {
     // -------------------------------------------------------------------------
 
     /** Returns a screenshot bitmap, or null if the accessibility service is not bound. */
-    fun captureScreen(): Bitmap? = accessibilityService?.requestScreenshot()
+    fun captureScreen(): Bitmap? = accessibilityServices.get()?.requestScreenshot()
 
     // -------------------------------------------------------------------------
     // Input simulation
@@ -53,7 +57,7 @@ class VirtualComputer private constructor(private val context: Context) {
         val gesture = android.accessibilityservice.GestureDescription.Builder()
             .addStroke(stroke)
             .build()
-        accessibilityService?.dispatchGesture(gesture, null, null)
+        accessibilityServices.get()?.dispatchGesture(gesture, null, null)
     }
 
     fun click(x: Int, y: Int) {
@@ -62,11 +66,11 @@ class VirtualComputer private constructor(private val context: Context) {
         val gesture = android.accessibilityservice.GestureDescription.Builder()
             .addStroke(stroke)
             .build()
-        accessibilityService?.dispatchGesture(gesture, null, null)
+        accessibilityServices.get()?.dispatchGesture(gesture, null, null)
     }
 
     fun typeText(text: String) {
-        val focused = accessibilityService
+        val focused = accessibilityServices.get()
             ?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) ?: return
         val args = Bundle().apply {
             putCharSequence(

@@ -36,8 +36,22 @@ class VirtualAccessibilityService : AccessibilityService() {
     }
 
     override fun onUnbind(intent: android.content.Intent?): Boolean {
-        if (pendingInstance === this) pendingInstance = null
+        clearRegistration()
         return super.onUnbind(intent)
+    }
+
+    override fun onDestroy() {
+        clearRegistration()
+        super.onDestroy()
+    }
+
+    private fun clearRegistration() {
+        if (pendingInstance === this) pendingInstance = null
+        try {
+            VirtualComputer.getInstance().clearAccessibilityService(this)
+        } catch (_: IllegalStateException) {
+            // VirtualComputer was never initialised, so no active binding exists.
+        }
     }
 
     companion object {
