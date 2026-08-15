@@ -17,6 +17,7 @@ import android.view.ViewGroup
 import android.widget.Button
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.lifecycleScope
@@ -41,6 +42,11 @@ class SetupFragment : Fragment() {
     private lateinit var tokenText: TextView
     private lateinit var copyBtn: Button
 
+    private val notificationPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) {
+            refreshPermissionIcons()
+        }
+
     override fun onCreateView(
         inflater: LayoutInflater,
         container: ViewGroup?,
@@ -51,12 +57,11 @@ class SetupFragment : Fragment() {
         super.onViewCreated(view, savedInstanceState)
 
         iconAccessibility = view.findViewById(R.id.iconAccessibility)
-        iconDeviceAdmin   = view.findViewById(R.id.iconDeviceAdmin)
-        iconNotification  = view.findViewById(R.id.iconNotification)
-        tokenText         = view.findViewById(R.id.tokenText)
-        copyBtn           = view.findViewById(R.id.copyTokenBtn)
+        iconDeviceAdmin = view.findViewById(R.id.iconDeviceAdmin)
+        iconNotification = view.findViewById(R.id.iconNotification)
+        tokenText = view.findViewById(R.id.tokenText)
+        copyBtn = view.findViewById(R.id.copyTokenBtn)
 
-        // Row click targets
         view.findViewById<View>(R.id.rowAccessibility).setOnClickListener {
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
         }
@@ -66,14 +71,16 @@ class SetupFragment : Fragment() {
                     DevicePolicyManager.EXTRA_DEVICE_ADMIN,
                     ComponentName(requireContext(), EveDeviceAdminReceiver::class.java)
                 )
-                putExtra(DevicePolicyManager.EXTRA_ADD_EXPLANATION,
-                    "Required for lock-screen and work-profile control")
+                putExtra(
+                    DevicePolicyManager.EXTRA_ADD_EXPLANATION,
+                    "Required for lock-screen and work-profile control"
+                )
             }
             startActivity(intent)
         }
         view.findViewById<View>(R.id.rowNotification).setOnClickListener {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 42)
+                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
             }
         }
 
@@ -94,20 +101,22 @@ class SetupFragment : Fragment() {
         refreshPermissionIcons()
     }
 
-    // ── Permission checks ────────────────────────────────────────────────────
-
     private fun refreshPermissionIcons() {
         iconAccessibility.text = if (isAccessibilityEnabled()) "✔" else "✘"
         iconAccessibility.setTextColor(
-            ContextCompat.getColor(requireContext(),
-                if (isAccessibilityEnabled()) R.color.status_ok else R.color.status_error)
+            ContextCompat.getColor(
+                requireContext(),
+                if (isAccessibilityEnabled()) R.color.status_ok else R.color.status_error
+            )
         )
 
         val adminActive = isDeviceAdminActive()
         iconDeviceAdmin.text = if (adminActive) "✔" else "–"
         iconDeviceAdmin.setTextColor(
-            ContextCompat.getColor(requireContext(),
-                if (adminActive) R.color.status_ok else R.color.status_warn)
+            ContextCompat.getColor(
+                requireContext(),
+                if (adminActive) R.color.status_ok else R.color.status_warn
+            )
         )
 
         val notifGranted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -117,8 +126,10 @@ class SetupFragment : Fragment() {
         } else true
         iconNotification.text = if (notifGranted) "✔" else "✘"
         iconNotification.setTextColor(
-            ContextCompat.getColor(requireContext(),
-                if (notifGranted) R.color.status_ok else R.color.status_warn)
+            ContextCompat.getColor(
+                requireContext(),
+                if (notifGranted) R.color.status_ok else R.color.status_warn
+            )
         )
     }
 
@@ -132,12 +143,10 @@ class SetupFragment : Fragment() {
 
     private fun isDeviceAdminActive(): Boolean {
         val dpm = requireContext().getSystemService(Context.DEVICE_POLICY_SERVICE)
-                as DevicePolicyManager
+            as DevicePolicyManager
         val admin = ComponentName(requireContext(), EveDeviceAdminReceiver::class.java)
         return dpm.isAdminActive(admin)
     }
-
-    // ── Token display ────────────────────────────────────────────────────────
 
     private fun loadToken() {
         viewLifecycleOwner.lifecycleScope.launch {
@@ -147,7 +156,9 @@ class SetupFragment : Fragment() {
                         .takeIf { it.exists() }
                         ?.readText()
                         ?.trim()
-                } catch (_: Exception) { null }
+                } catch (_: Exception) {
+                    null
+                }
             }
             if (token != null) {
                 tokenText.text = token
