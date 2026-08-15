@@ -505,3 +505,40 @@ The complete executable baseline was reproduced without source changes: Python c
 **Android target discovery result:** `adb devices -l` returned no connected device. The installed Android SDK has neither an emulator binary nor an AVD. Therefore no APK installation, application startup, main UI, EveService, Hermes-on-Android, startup-race-on-Android, task lifecycle-on-Android, service restart, Chaquopy bridge, AI-provider, Accessibility, screenshot, stress, logcat, or physical-device validation was executed or claimed. These checks are explicitly **BLOCKED**, not passed.
 
 A source-only review confirmed that Hermes retains loopback-only binding, non-empty constant-time bearer authentication, bounded duplicate-task tracking, and Agent Hub retains an exact allowlist before subprocess test commands. The search did not find a committed hard-coded credential. Existing TODOs, bridge exception guards, and unimplemented sandbox work were classified as deferred or previously documented items, not newly confirmed runtime defects. No source repair was justified without a real Android target.
+
+
+---
+
+## Production-Readiness Continuation — 2026-08-16
+
+**Starting commit:** `cba117f0ed4d2f16fe10054b3b4a3bc672175294` on clean, synchronized `main` / `origin/main`.
+
+### Confirmed defect
+
+`EveService` installs a process-wide `Thread.setDefaultUncaughtExceptionHandler` during service creation but the previous handler was never restored when the service was destroyed. The process-wide crash-handler replacement could therefore survive an EVE service restart or destruction and retain a service-associated reporting path after its lifecycle ended.
+
+### Minimal repair and regression coverage
+
+A small, pure Kotlin `UncaughtExceptionHandlerLease` now owns EveService's handler installation. On destruction it restores the previous handler only if EveService's handler remains current; a newer handler installed by another component is preserved. `EveService.onDestroy` releases that lease after cancelling callbacks, HTTP calls, and Python work. New JVM tests verify both restoration of the prior handler and preservation of a newer handler.
+
+### Verification
+
+| Check | Result |
+|---|---|
+| Focused `UncaughtExceptionHandlerLeaseTest` | PASS — 2 tests |
+| Python compile | PASS |
+| Python regression suite | PASS — 22 tests with `ResourceWarning` treated as errors |
+| Android JVM tests | PASS — 3 tests total, 0 failures, 0 errors |
+| Android lint | PASS |
+| Clean Android debug build | PASS |
+| TypeScript workspace build | PASS |
+| `git diff --check` | PASS |
+| Security review | PASS — no committed credential; Hermes loopback/authentication, bounded idempotency, and command allowlist preserved |
+| Release signing | BLOCKED AS INTENDED — missing approved signing material fails closed without a circular dependency |
+| Device runtime | BLOCKED — no ADB device, emulator binary, or AVD available |
+
+### Warning classification
+
+The known Chaquopy Python-3.11, Android SDK XML-version, Chaquopy watcher, TensorFlow namespace, and debug native-library stripping messages remain non-blocking toolchain/dependency warnings. Kotlin still reports a redundant exhaustive `else`, deprecated permission API, incomplete sandbox variables, and an unused VirtualComputer argument; they are deferred rather than suppressed because no new reproducible correctness issue was established.
+
+No Tasklet code or dependency was introduced. No dependency version was changed. No device-only result is claimed as passed.

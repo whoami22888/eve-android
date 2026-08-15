@@ -31,6 +31,7 @@ class EveService : Service() {
     @Volatile private var isStopping = false
     private val okHttp = OkHttpClient.Builder().connectTimeout(5, TimeUnit.SECONDS).readTimeout(10, TimeUnit.SECONDS).build()
     private val startupHandler = Handler(Looper.getMainLooper())
+    private val uncaughtExceptionHandlerLease = UncaughtExceptionHandlerLease()
 
     override fun onCreate() {
         super.onCreate(); isStopping = false; crashReporter = CrashReporter(applicationContext); installUncaughtExceptionHandler(); startForeground(NOTIFICATION_ID, buildNotification())
@@ -69,6 +70,7 @@ class EveService : Service() {
         startupHandler.removeCallbacksAndMessages(null)
         okHttp.dispatcher.cancelAll()
         try { eveInstance.callAttr("stop") } catch (_: Exception) {}
+        uncaughtExceptionHandlerLease.restore()
         EveEventBus.emit(EveEvent.StatusChanged("EVE stopped"))
         super.onDestroy()
     }
@@ -132,7 +134,14 @@ class EveService : Service() {
 
     private fun buildNotification(): Notification { val channelId = "eve_channel"; if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) getSystemService(NotificationManager::class.java).createNotificationChannel(NotificationChannel(channelId, "EVE Agent", NotificationManager.IMPORTANCE_LOW)); return NotificationCompat.Builder(this, channelId).setContentTitle("EVE Agent").setContentText("EVE Agent Hub running").setSmallIcon(android.R.drawable.ic_dialog_info).setOngoing(true).build() }
     private fun isAccessibilityServiceEnabled(): Boolean { val value = Settings.Secure.getString(contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES) ?: return false; return value.contains("${packageName}/.VirtualAccessibilityService") }
-    private fun installUncaughtExceptionHandler() { val existing = Thread.getDefaultUncaughtExceptionHandler(); Thread.setDefaultUncaughtExceptionHandler { thread, throwable -> crashReporter.logException(throwable, "UncaughtException[${thread.name}]"); EveEventBus.emit(EveEvent.LogLine("CRASH in ${thread.name}: ${throwable.message}", "ERROR")); existing?.uncaughtException(thread, throwable) } }
+    private fun installUncaughtExceptionHandler() {
+        val existing = Thread.getDefaultUncaughtExceptionHandler()
+        uncaughtExceptionHandlerLease.install(Thread.UncaughtExceptionHandler { thread, throwable ->
+            crashReporter.logException(throwable, "UncaughtException[${thread.name}]")
+            EveEventBus.emit(EveEvent.LogLine("CRASH in ${thread.name}: ${throwable.message}", "ERROR"))
+            existing?.uncaughtException(thread, throwable)
+        })
+    }
     companion object {
         private const val NOTIFICATION_ID = 1
         private const val MAX_HERMES_SUBMIT_ATTEMPTS = 6
