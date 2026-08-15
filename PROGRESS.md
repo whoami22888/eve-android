@@ -433,3 +433,10 @@ Chaquopy Python 3.11 availability, SDK XML version, and incremental watcher mess
 ### Remaining blocker and next step
 
 The code/build/JVM-test portion of the lifecycle milestone is verified. The device-only portion remains blocked until a physical device or emulator is attached. The next required action is actual-device instrumentation: install the debug APK, launch it, exercise foreground-service start/stop/restart, verify Accessibility-disabled behavior, verify Hermes token/port readiness and controlled task submission/retry, cancel a safe task, and collect logcat for crashes or ANRs.
+
+
+### Final commit and remote verification
+
+The lifecycle hardening change was committed as `9d4ec669521e446af5dd1fec73d223e52d12b2fb` (`fix: clear stale accessibility service bindings`) and pushed successfully to `origin/main` at `https://github.com/whoami22888/eve-android.git`. Post-push verification confirmed that local `HEAD` and `origin/main` both resolve to `9d4ec669521e446af5dd1fec73d223e52d12b2fb` and that the working tree was clean.
+
+GitHub Actions workflow **Eve Agent Hub CI**, run `31903120225`, executed for that commit and completed with conclusion **success**: https://github.com/whoami22888/eve-android/actions/runs/31903120225
