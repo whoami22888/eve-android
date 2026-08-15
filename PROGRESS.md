@@ -492,3 +492,16 @@ The manifest still requests `MANAGE_EXTERNAL_STORAGE` and allows backups; whethe
 ### Final commit, push, and CI
 
 The verified audit repair set was committed as `2087a2ff20660ff51f986dca7fe3885f6f1d972e` (`fix: harden runtime reliability and builds`) and pushed successfully to `origin/main` at `https://github.com/whoami22888/eve-android.git`. Post-push verification confirmed local `HEAD` and `origin/main` both resolve to that commit and the working tree was clean. GitHub Actions workflow **Eve Agent Hub CI**, run `31904938522`, completed with conclusion **success** for the same SHA: https://github.com/whoami22888/eve-android/actions/runs/31904938522
+
+
+---
+
+## Master Runtime Validation Preflight — 2026-08-16
+
+**Starting commit:** `b00bde8501e950e3442c70f52872eaf6a62ccbfd` on clean, synchronized `main` / `origin/main`.
+
+The complete executable baseline was reproduced without source changes: Python compilation and 22 Python tests passed; `:app:testDebugUnitTest`, `:app:lintDebug`, and `:app:assembleDebug` passed; the root TypeScript workspace build passed; and `git diff --check` passed. The release-signing gate remained fail-closed for absent approved signing material and did not report a circular task dependency.
+
+**Android target discovery result:** `adb devices -l` returned no connected device. The installed Android SDK has neither an emulator binary nor an AVD. Therefore no APK installation, application startup, main UI, EveService, Hermes-on-Android, startup-race-on-Android, task lifecycle-on-Android, service restart, Chaquopy bridge, AI-provider, Accessibility, screenshot, stress, logcat, or physical-device validation was executed or claimed. These checks are explicitly **BLOCKED**, not passed.
+
+A source-only review confirmed that Hermes retains loopback-only binding, non-empty constant-time bearer authentication, bounded duplicate-task tracking, and Agent Hub retains an exact allowlist before subprocess test commands. The search did not find a committed hard-coded credential. Existing TODOs, bridge exception guards, and unimplemented sandbox work were classified as deferred or previously documented items, not newly confirmed runtime defects. No source repair was justified without a real Android target.
