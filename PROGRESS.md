@@ -547,3 +547,26 @@ No Tasklet code or dependency was introduced. No dependency version was changed.
 ### Final commit, push, and CI
 
 The verified continuation repair was committed as `6c378cc127c08f9dcb341c66d8034c48d7b41ca2` (`fix: restore previous crash handler on service stop`) and pushed successfully to `origin/main` at `https://github.com/whoami22888/eve-android.git`. Local `HEAD` and `origin/main` were verified identical after push. GitHub Actions workflow **Eve Agent Hub CI**, run `31906592396`, completed with conclusion **success** for the same SHA: https://github.com/whoami22888/eve-android/actions/runs/31906592396
+
+
+---
+
+## Final Pre-Device Milestone — 2026-08-16
+
+**Starting commit:** `5239449a50c9acbf59072fea3f0687c78fec8877` on clean, synchronized `main` / `origin/main`.
+
+### Executed host-side verification
+
+Python compilation and 22 Python tests passed with `ResourceWarning` treated as an error. Android JVM tests (3 tests, 0 failures/errors), Android lint, and a clean debug APK build passed using JDK 17, CPython 3.11, Android SDK API 34, Build-Tools 34.0.0, and Gradle 8.2. The root TypeScript workspace build passed. `git diff --check` passed before documentation updates.
+
+A final targeted source review found no new reproducible defect. Existing service teardown still cancels Handler callbacks and OkHttp calls, stops the Python orchestrator, and restores the EVE-owned crash-handler lease. Hermes retains non-empty constant-time authentication, loopback binding, bounded/locked duplicate-task tracking, post-bind port publication, and clean server shutdown. Agent Hub retains its exact subprocess-command allowlist. No committed credential pattern was found. No speculative source or dependency change was made.
+
+### Emulator and managed-device feasibility
+
+**EMULATOR = BLOCKED.** The SDK contains `adb`, platform API 34, and Build-Tools 34.0.0, but no `emulator` binary, no installed system image, and no AVD. `adb devices -l` returned no connected target. `/dev/kvm` is absent, preventing hardware acceleration. The host has 3.8 GiB RAM and 29 GiB free disk; no unsupported emulator installation or Gradle managed-device configuration was attempted. Consequently APK installation, application startup, EveService, Hermes-in-APK, Chaquopy bridge, task lifecycle, service restart, AI provider, Accessibility, screenshot, stress, and Android logcat tests remain **BLOCKED**, not passed.
+
+### Release and warning status
+
+Release-signing verification remains fail-closed: `:app:verifyReleaseSigning` exited non-zero with the expected missing-signing-material message and without a circular dependency. The known Chaquopy, SDK XML, TensorFlow namespace, native stripping, Kotlin incomplete-sandbox/deprecation, and deprecated workspace dependency messages remain classified warnings; no warning was suppressed or changed without a demonstrated defect.
+
+No Tasklet code, dependency, architectural replacement, fake credential, signing bypass, or emulator package was introduced. The next required action is real Android runtime testing on a physical device or a properly provisioned Android-emulator host.
