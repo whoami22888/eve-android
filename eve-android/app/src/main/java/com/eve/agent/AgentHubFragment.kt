@@ -49,16 +49,12 @@ class AgentHubFragment : Fragment() {
         root.addView(controls)
         root.addView(TextView(context).apply { text = "Pipeline history"; textSize = 16f; setTextColor(Color.WHITE); setPadding(0, 16, 0, 6) })
         val scroll = ScrollView(context); historyText = TextView(context).apply { text = "No pipeline runs yet."; textSize = 13f; setTextColor(Color.LTGRAY); setPadding(0, 8, 0, 16) }; scroll.addView(historyText); root.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
-        return root
-    }
-
-    override fun onStart() {
-        super.onStart()
         viewModel.pipelineRuns.observe(viewLifecycleOwner) { runs ->
             if (runs.isNotEmpty() && activeTaskId == null) activeTaskId = runs.first().taskId
             val active = runs.firstOrNull { it.taskId == activeTaskId } ?: runs.firstOrNull()
             if (active != null) { statusText.text = "${active.status.uppercase()} • ${active.message} • ${active.taskId.take(12)}"; progress.progress = active.progress; stageText.text = "Plan → Research → Code → Test → Review\nCurrent: ${active.stage}" }
             historyText.text = runs.joinToString("\n\n") { r -> "${r.taskId}\n${r.status.uppercase()} • ${r.progress}% • ${r.stage}\n${r.message}${if (r.error.isNotBlank()) "\nError: ${r.error}" else ""}" }
         }
+        return root
     }
 }

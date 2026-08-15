@@ -80,9 +80,11 @@ class VirtualAccessibilityService : AccessibilityService() {
      * Uses the framework's [AccessibilityService.takeScreenshot] (API 30+).
      * Returns null on older API levels or if the capture times out.
      */
-    fun requestScreenshot(): Bitmap? {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return null   // API 30+
+    fun requestScreenshot(): Bitmap? =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) requestScreenshotApi30() else null
 
+    @androidx.annotation.RequiresApi(Build.VERSION_CODES.R)
+    private fun requestScreenshotApi30(): Bitmap? {
         var result: Bitmap? = null
         val latch = CountDownLatch(1)
 

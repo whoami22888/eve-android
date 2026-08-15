@@ -63,7 +63,10 @@ class AgentHubAgent:
         except Exception: pass
     def _emit_stage(self, task_id, stage, status, progress, message=""):
         self._task_stage[task_id] = stage; self.log(f"Agent Hub [{_STAGE_LABELS.get(stage, stage)}] {status}: {message}".strip()); self._emit("onPipelineStage", task_id, _STAGE_LABELS.get(stage, stage), status, int(progress), message)
-    def _complete(self, task): self._emit("onTaskCompleted", task.id, task.action, self._redact(task.error if task.status == "failed" else (task.result or "")), task.status == "failed")
+    def _complete(self, task):
+        if task.status in {"completed", "failed", "cancelled", "interrupted"} and task.completed_at is None:
+            task.completed_at = time.time()
+        self._emit("onTaskCompleted", task.id, task.action, self._redact(task.error if task.status == "failed" else (task.result or "")), task.status == "failed")
     def _cancelled(self, task_id):
         with self._state_lock: event = self._cancel_events.get(task_id); return event.is_set() if event else False
     def _wait_if_paused(self, task_id):

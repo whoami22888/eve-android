@@ -3,6 +3,7 @@
 import logging
 import threading
 import queue
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 from .task_queue import TaskQueue
@@ -73,6 +74,8 @@ class EVE:
         self._agent_hub_executor.shutdown(wait=False, cancel_futures=True)
 
     def _complete(self, task) -> None:
+        if task.status in {"completed", "failed", "cancelled", "interrupted"} and task.completed_at is None:
+            task.completed_at = time.time()
         failed = task.status == "failed"; result = task.error if failed else (task.result or "")
         _bridge_task_done(task.id, task.action, str(result), failed)
 

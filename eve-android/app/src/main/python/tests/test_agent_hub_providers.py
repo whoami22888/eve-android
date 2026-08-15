@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from eve import memory
 from eve.agent_hub_agent import AgentHubAgent, _safe_env
 from eve.hermes_agent import HermesAgent
 from eve.orchestrator import EVE
@@ -85,6 +86,37 @@ class ProviderTests(unittest.TestCase):
             self.assertEqual(config.model, "auto")
             self.assertEqual(config.base_url, "https://api.deepseek.com")
 
+    def test_hermes_empty_persisted_token_is_replaced_and_blank_bearer_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            token_path = Path(directory, "hermes_token.txt")
+            token_path.write_text("", encoding="utf-8")
+            hermes = HermesAgent(directory)
+            hermes.set_task_queue(TaskQueue())
+            client = hermes._app.test_client()
+
+            self.assertTrue(hermes._token)
+            self.assertEqual(token_path.read_text(encoding="utf-8"), hermes._token)
+            blank = client.post("/command", json={"action": "status", "params": {}}, headers={"Authorization": "Bearer "})
+            valid = client.post("/command", json={"action": "status", "params": {}}, headers={"Authorization": f"Bearer {hermes._token}"})
+            self.assertEqual(blank.status_code, 401)
+            self.assertEqual(valid.status_code, 202)
+
+    def test_non_object_memory_json_recovers_as_empty_store(self):
+        with tempfile.TemporaryDirectory() as directory:
+            original_dir = memory._DATA_DIR
+            original_file = memory._MEMORY_FILE
+            try:
+                memory._DATA_DIR = directory
+                memory._MEMORY_FILE = os.path.join(directory, "memory.json")
+                with open(memory._MEMORY_FILE, "w", encoding="utf-8") as fh:
+                    json.dump(["not", "a", "mapping"], fh)
+                memory.remember("key", "value")
+                self.assertEqual(memory.recall("key"), "value")
+                self.assertEqual(memory.all_memories(), {"key": "value"})
+            finally:
+                memory._DATA_DIR = original_dir
+                memory._MEMORY_FILE = original_file
+
     def test_workspace_rejects_project_and_file_traversal(self):
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaises(WorkspaceError):
@@ -159,6 +191,7 @@ class ProviderTests(unittest.TestCase):
             agent._execute_pipeline(task, {"prompt": "x", "project": "demo"})
             self.assertEqual(task.status, "failed")
             self.assertIn("unexpected provider response", task.error)
+            self.assertIsNotNone(task.completed_at)
             agent.stop()
 
     def test_hermes_repeated_task_id_is_queued_once(self):
@@ -206,6 +239,25 @@ class ProviderTests(unittest.TestCase):
         eve.stop()
         thread.join(2)
         self.assertFalse(thread.is_alive())
+
+    def test_hermes_port_is_published_only_after_server_bind(self):
+        with tempfile.TemporaryDirectory() as directory:
+            port_path = Path(directory, "hermes_port.txt")
+            hermes = HermesAgent(directory)
+            self.assertFalse(port_path.exists())
+
+            thread = threading.Thread(target=hermes.run, daemon=True)
+            thread.start()
+            deadline = time.monotonic() + 2
+            while hermes._server is None and time.monotonic() < deadline:
+                time.sleep(0.01)
+
+            self.assertIsNotNone(hermes._server)
+            self.assertTrue(port_path.exists())
+            self.assertEqual(port_path.read_text(encoding="utf-8"), str(hermes._port))
+            hermes.stop()
+            thread.join(2)
+            self.assertFalse(thread.is_alive())
 
     def test_hermes_server_stops_and_new_instance_restarts(self):
         def start(agent):

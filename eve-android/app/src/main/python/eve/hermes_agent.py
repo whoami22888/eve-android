@@ -4,7 +4,6 @@ import logging
 import os
 import re
 import secrets
-import socket
 import threading
 import uuid
 from collections import OrderedDict
@@ -41,7 +40,10 @@ def _load_or_create_token(data_dir: str) -> str:
     try:
         if os.path.exists(token_path):
             with open(token_path, encoding="utf-8") as f:
-                return f.read().strip()
+                persisted = f.read().strip()
+            if persisted:
+                return persisted
+            logger.warning("Hermes token file was empty; replacing it with a new token")
         token = secrets.token_hex(32)
         os.makedirs(data_dir, exist_ok=True)
         with open(token_path, "w", encoding="utf-8") as f:
@@ -50,18 +52,6 @@ def _load_or_create_token(data_dir: str) -> str:
     except OSError as exc:
         logger.warning("Could not persist Hermes token (%s); using ephemeral token", exc)
         return secrets.token_hex(32)
-
-
-def _find_free_port() -> int:
-    for port in PORT_RANGE:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            try:
-                s.bind(("127.0.0.1", port))
-                return port
-            except OSError:
-                continue
-    return DEFAULT_PORT
 
 
 class HermesAgent:
@@ -75,14 +65,14 @@ class HermesAgent:
         self._server = None
         self._stopped = False
         self._token = _load_or_create_token(resolved_dir)
-        self._port = _find_free_port()
+        self._port = None
         self._app = Flask(__name__)
         self._setup_routes()
-        self._persist_port()
 
     def _check_auth(self) -> bool:
         auth = request.headers.get("Authorization", "")
-        return auth.startswith("Bearer ") and secrets.compare_digest(auth[7:], self._token)
+        candidate = auth[7:] if auth.startswith("Bearer ") else ""
+        return bool(candidate) and bool(self._token) and secrets.compare_digest(candidate, self._token)
 
     def _setup_routes(self):
         app = self._app
@@ -146,7 +136,22 @@ class HermesAgent:
         with self._server_lock:
             if self._stopped:
                 return
-            self._server = make_server("127.0.0.1", self._port, self._app, threaded=True)
+            server = None
+            for port in PORT_RANGE:
+                try:
+                    server = make_server("127.0.0.1", port, self._app, threaded=True)
+                    self._port = port
+                    break
+                except OSError:
+                    continue
+            if server is None:
+                logger.error("HermesAgent could not bind any configured localhost port")
+                return
+            if self._stopped:
+                server.server_close()
+                return
+            self._server = server
+            self._persist_port()
         logger.info("HermesAgent HTTP gateway on 127.0.0.1:%d", self._port)
         try:
             self._server.serve_forever()

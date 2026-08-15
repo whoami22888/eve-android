@@ -440,3 +440,50 @@ The code/build/JVM-test portion of the lifecycle milestone is verified. The devi
 The lifecycle hardening change was committed as `9d4ec669521e446af5dd1fec73d223e52d12b2fb` (`fix: clear stale accessibility service bindings`) and pushed successfully to `origin/main` at `https://github.com/whoami22888/eve-android.git`. Post-push verification confirmed that local `HEAD` and `origin/main` both resolve to `9d4ec669521e446af5dd1fec73d223e52d12b2fb` and that the working tree was clean.
 
 GitHub Actions workflow **Eve Agent Hub CI**, run `31903120225`, executed for that commit and completed with conclusion **success**: https://github.com/whoami22888/eve-android/actions/runs/31903120225
+
+
+---
+
+## Whole-Repository Audit, Repair, Hardening, and Performance Pass — 2026-08-16
+
+**Starting commit:** `5d5d0bfb47ada991ba7054f53215ccbc011386af` (`docs: record lifecycle verification results`) on clean, synchronized `main` / `origin/main`.
+
+### Audit coverage
+
+The audit inventoried and reviewed the Android/Kotlin runtime, service lifecycle, Accessibility bridge, persistence/UI paths, Python orchestrator/Hermes/Agent Hub/task/memory/provider/workspace modules, JVM/Python tests, Android manifest and Gradle configuration, GitHub Actions configuration, and workspace TypeScript packages. Static-review candidates were reproduced before source repair where a safe executable probe was available.
+
+### Confirmed defects repaired
+
+| Area | Confirmed defect | Repair | Verification |
+|---|---|---|---|
+| Hermes authentication | An existing empty `hermes_token.txt` made the token an empty string and accepted a blank `Bearer ` header. | Empty persisted tokens are replaced with a new generated token; authentication requires non-empty candidate and stored tokens before constant-time comparison. | Focused regression test proves blank bearer is rejected and a valid replacement token succeeds. |
+| Hermes readiness and port binding | Hermes wrote a candidate port before a server was bound; the old probe-then-bind sequence had a port TOCTOU race. | The server now binds each configured localhost candidate directly and writes the port file only after successful bind. | Focused regression test proves no port file exists before startup and the published port matches the bound server. |
+| Python memory shape safety | Valid JSON values that were not objects caused `remember`/`recall` to raise `TypeError`. | `_load` now accepts only a JSON object and recovers other valid JSON shapes as an empty store. | Focused regression test passes for a list-form memory document. |
+| Task terminal timing | Failed Agent Hub pipelines left `Task.completed_at` unset; synchronous terminal orchestrator paths also relied on agents to populate it. | The Agent Hub completion helper and orchestrator terminal bridge now record a timestamp once for completed, failed, cancelled, or interrupted tasks. | Existing failure regression now asserts a non-null completion timestamp. |
+| Agent Hub UI lifecycle | Each fragment `onStart` added another observer until view destruction, causing duplicate rendering after repeated stop/start cycles. | The observer is registered once for each view in `onCreateView`. | Android JVM test and debug build compile the updated fragment. |
+| Android lint / API safety | Android lint found nine blocking errors: API-30 screenshot calls were not locally guarded and four manifest uses-permissions were protected/system-only declarations. | Screenshot work is isolated in an API-30 annotated helper; ungrantable manifest-level declarations were removed while component permission attributes remain. | `:app:lintDebug` passes. |
+| Workspace build reproducibility | The declared workspace build failed when `PORT` and `BASE_PATH` were absent, although neither is required for a static production build. | Vite defaults to port `5173` and base path `/` while still rejecting invalid explicit ports. | `pnpm run build` passes after an ignore-scripts frozen-lockfile install. |
+
+### Full verification
+
+| Check | Result | Detail |
+|---|---|---|
+| Python compile | PASS | `python3.11 -m compileall -q eve-android/app/src/main/python` |
+| Python tests | PASS | 22 tests with `ResourceWarning` treated as errors |
+| Workspace TypeScript build | PASS | Root `pnpm run build` completed: type checks plus Vite and API-server builds |
+| Android lint | PASS | `:app:lintDebug` after correcting all nine blocking lint errors |
+| Android JVM tests | PASS | 1 JVM test, 0 failures, 0 errors |
+| Android clean build | PASS | `clean :app:lintDebug :app:testDebugUnitTest :app:assembleDebug --no-daemon` |
+| Debug APK | PASS | `eve-android/app/build/outputs/apk/debug/app-debug.apk`, 31,977,804 bytes during final verification |
+| Diff formatting | PASS | `git diff --check` |
+| Secret scan | PASS | Matches were configuration fields, encryption labels, provider plumbing, example data, or tests; no hard-coded credential was found. |
+| Release signing | BLOCKED AS INTENDED | Missing valid signing material produces the explicit fail-closed error and no circular dependency. |
+| Device/emulator testing | BLOCKED | `adb devices -l` returned no target. |
+
+### Warning classification
+
+The Chaquopy Python 3.11 availability notice, Android SDK XML-version notice, Chaquopy incremental watcher message, TensorFlow namespace warnings, and debug native-library stripping messages are **non-blocking toolchain/dependency warnings** because lint, clean build, tests, and debug packaging passed. Existing Kotlin warnings for a redundant exhaustive `else`, a deprecated permission API, the unimplemented `SkillSandboxService`, and an unused `VirtualComputer` argument are **non-blocking actionable/deferred items**; none was changed without a demonstrated scope-safe defect.
+
+### Deferred security and product decisions
+
+The manifest still requests `MANAGE_EXTERNAL_STORAGE` and allows backups; whether those declarations can be narrowed requires validation against actual storage and backup product requirements rather than an untested permission removal. `VirtualComputer` network/script capabilities and the unimplemented isolated SkillSandbox service require explicit product-policy and device validation; no speculative functionality-removing change was made. No device/emulator was available to validate foreground-service, Accessibility, Hermes, cancellation, restart, process-death, or logcat behavior on Android itself.

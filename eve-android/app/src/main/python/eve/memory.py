@@ -32,7 +32,8 @@ def _load() -> dict:
     try:
         if os.path.exists(_MEMORY_FILE):
             with open(_MEMORY_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
     except (json.JSONDecodeError, OSError):
         pass
     return {}
