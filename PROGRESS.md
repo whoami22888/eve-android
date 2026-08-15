@@ -542,3 +542,8 @@ A small, pure Kotlin `UncaughtExceptionHandlerLease` now owns EveService's handl
 The known Chaquopy Python-3.11, Android SDK XML-version, Chaquopy watcher, TensorFlow namespace, and debug native-library stripping messages remain non-blocking toolchain/dependency warnings. Kotlin still reports a redundant exhaustive `else`, deprecated permission API, incomplete sandbox variables, and an unused VirtualComputer argument; they are deferred rather than suppressed because no new reproducible correctness issue was established.
 
 No Tasklet code or dependency was introduced. No dependency version was changed. No device-only result is claimed as passed.
+
+
+### Final commit, push, and CI
+
+The verified continuation repair was committed as `6c378cc127c08f9dcb341c66d8034c48d7b41ca2` (`fix: restore previous crash handler on service stop`) and pushed successfully to `origin/main` at `https://github.com/whoami22888/eve-android.git`. Local `HEAD` and `origin/main` were verified identical after push. GitHub Actions workflow **Eve Agent Hub CI**, run `31906592396`, completed with conclusion **success** for the same SHA: https://github.com/whoami22888/eve-android/actions/runs/31906592396
