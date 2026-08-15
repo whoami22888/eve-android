@@ -21,10 +21,11 @@ class SkillSandboxService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        // Receive skill execution requests via intent extras (temporary approach
-        // until AIDL is wired up)
-        val script = intent?.getStringExtra("script") ?: return START_NOT_STICKY
-        val language = intent.getStringExtra("language") ?: "python"
+        // Validate that a skill execution request contains a script. Execution
+        // remains disabled until the isolated-process IPC sandbox is implemented.
+        if (intent?.getStringExtra("script").isNullOrBlank()) {
+            return START_NOT_STICKY
+        }
 
         // TODO: sandbox execution — currently a no-op in isolated process
         //       because VirtualComputer singleton is not available here.
