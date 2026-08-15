@@ -69,7 +69,7 @@ jobs:
           emulator-boot-timeout: 600
           emulator-options: -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect -no-metrics
           disable-animations: true
-          script: ./gradlew :app:connectedDebugAndroidTest --no-daemon --stacktrace
+          script: cd eve-android && ./gradlew :app:connectedDebugAndroidTest --no-daemon --stacktrace
 
   typescript-typecheck:
     runs-on: ubuntu-latest
