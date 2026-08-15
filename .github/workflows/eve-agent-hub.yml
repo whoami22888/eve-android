@@ -67,7 +67,7 @@ jobs:
           profile: pixel_2
           emulator-options: -no-window -no-audio -no-boot-anim
           disable-animations: true
-          script: ./gradlew :app:connectedDebugAndroidTest --no-daemon
+          script: ./gradlew :app:connectedDebugAndroidTest --no-daemon --stacktrace
 
   typescript-typecheck:
     runs-on: ubuntu-latest
