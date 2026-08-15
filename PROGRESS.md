@@ -487,3 +487,8 @@ The Chaquopy Python 3.11 availability notice, Android SDK XML-version notice, Ch
 ### Deferred security and product decisions
 
 The manifest still requests `MANAGE_EXTERNAL_STORAGE` and allows backups; whether those declarations can be narrowed requires validation against actual storage and backup product requirements rather than an untested permission removal. `VirtualComputer` network/script capabilities and the unimplemented isolated SkillSandbox service require explicit product-policy and device validation; no speculative functionality-removing change was made. No device/emulator was available to validate foreground-service, Accessibility, Hermes, cancellation, restart, process-death, or logcat behavior on Android itself.
+
+
+### Final commit, push, and CI
+
+The verified audit repair set was committed as `2087a2ff20660ff51f986dca7fe3885f6f1d972e` (`fix: harden runtime reliability and builds`) and pushed successfully to `origin/main` at `https://github.com/whoami22888/eve-android.git`. Post-push verification confirmed local `HEAD` and `origin/main` both resolve to that commit and the working tree was clean. GitHub Actions workflow **Eve Agent Hub CI**, run `31904938522`, completed with conclusion **success** for the same SHA: https://github.com/whoami22888/eve-android/actions/runs/31904938522
