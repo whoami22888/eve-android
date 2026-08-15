@@ -158,7 +158,7 @@ class AgentHubAgent:
             if start<=4: self._emit_stage(task.id,"reviewer","running",85,"Final implementation and security review"); context["review"]=self._call("reviewer",f"REQUEST:\n{prompt}\n\nCHANGED:\n{context.get('changed',[])}\n\nTEST RESULTS:\n{json.dumps(context.get('tests',[]))}\n\nWORKSPACE:\n{snapshot}",task.id)
             if self._cancelled(task.id): raise RuntimeError("Agent Hub task cancelled")
             task.result=self._redact(json.dumps({"project":project,"stages":context},ensure_ascii=False)); task.status="completed"; task.completed_at=time.time(); self._emit_stage(task.id,"reviewer","completed",100,"Pipeline completed"); self._complete(task)
-        except (ModelProviderError,WorkspaceError,OSError,ValueError,RuntimeError) as exc:
+        except Exception as exc:
             task.status="failed"; task.error=self._redact(str(exc)); self._emit_stage(task.id,self._task_stage.get(task.id,start_stage),"failed",max(1,stage_index.get(self._task_stage.get(task.id,start_stage),0)*20),task.error); self.log(f"Agent Hub failed: {task.error}","ERROR"); self._complete(task)
         finally:
             with self._state_lock: self._cancel_events.pop(task.id,None); self._pause_events.pop(task.id,None); self._active_processes.pop(task.id,None)

@@ -129,6 +129,38 @@ class ProviderTests(unittest.TestCase):
             self.assertEqual(task.status, "failed")
             self.assertIn("invalid project", task.error.lower())
 
+    def test_agent_hub_cancel_control_requests_active_task_cancellation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            agent = AgentHubAgent(data_dir=directory)
+            active = Task("agent_hub", "agent_hub", {"task": "x"}, task_id="b" * 32)
+            active.status = "running"
+            cancel_event = threading.Event()
+            with agent._state_lock:
+                agent._task_objects[active.id] = active
+                agent._cancel_events[active.id] = cancel_event
+                agent._pause_events[active.id] = threading.Event()
+            control = Task("agent_hub", "agent_hub_control", {"task_id": active.id, "command": "cancel"})
+            agent.assign_task(control)
+            self.assertEqual(control.status, "completed")
+            self.assertTrue(cancel_event.is_set())
+            self.assertEqual(control.result, f"Cancellation requested for {active.id}")
+            agent.stop()
+
+    def test_agent_hub_unexpected_provider_failure_marks_task_failed(self):
+        class BrokenProvider:
+            def complete(self, system, user, stage):
+                raise KeyError("unexpected provider response")
+
+        with tempfile.TemporaryDirectory() as directory:
+            agent = AgentHubAgent(data_dir=directory)
+            agent.provider = BrokenProvider()
+            agent._refresh_provider = lambda: None
+            task = Task("agent_hub", "agent_hub", {"task": "x", "project": "demo"})
+            agent._execute_pipeline(task, {"prompt": "x", "project": "demo"})
+            self.assertEqual(task.status, "failed")
+            self.assertIn("unexpected provider response", task.error)
+            agent.stop()
+
     def test_hermes_repeated_task_id_is_queued_once(self):
         with tempfile.TemporaryDirectory() as directory:
             hermes = HermesAgent(directory)

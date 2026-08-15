@@ -327,3 +327,53 @@ The modified Hermes implementation remains bound to `127.0.0.1` and retains bear
 ### Remaining blockers and recommended next milestone
 
 The immediate runtime-integration verification milestone is complete for local Python/HTTP integration and the Android debug build. The next justified milestone is **device/emulator lifecycle instrumentation**, covering foreground-service creation, accessibility-disabled behavior, Hermes startup, submission/retry, cancellation, process death, and recovery. Broader IPC redesign, persistence migration, and SkillSandbox implementation remain deferred.
+
+
+---
+
+## Agent Hub Terminal-Failure Coverage — 2026-08-16
+
+**Starting commit:** `2bcf6fa7fdca7bc198e574c9e523d48e03ff0734` (`fix: harden runtime integration verification`) on synchronized `main` / `origin/main`.
+
+### Baseline verification
+
+The repository was clean on `main`; local `HEAD` and `origin/main` both resolved to `2bcf6fa7fdca7bc198e574c9e523d48e03ff0734`. Java 17, CPython 3.11.15, Gradle 8.2, Android SDK API 34 / Build-Tools 34.0.0, and the declared Flask/requests dependencies were available.
+
+| Command | Result | Verified detail |
+|---|---|---|
+| `python3.11 -m compileall -q eve-android/app/src/main/python` | PASS | Completed successfully. |
+| `python3.11 -W error::ResourceWarning -m unittest discover -s eve-android/app/src/main/python/tests -p 'test_*.py' -v` before changes | PASS | 17 tests passed. |
+| `:app:testDebugUnitTest` before changes | PASS / `NO-SOURCE` | Gradle task completed, but Android JVM test sources are still absent. |
+| `:app:assembleDebug` before changes | PASS | Debug APK assembled successfully. |
+
+### Confirmed defect and minimal repair
+
+A focused regression test injected an unexpected `KeyError` from an otherwise configured model provider while the Agent Hub executed a pipeline. The initial test failed because `_execute_pipeline` caught only a narrow exception tuple; the exception escaped its worker, leaving the pipeline without its normal terminal-failure transition and completion notification.
+
+`agent_hub_agent.py` now converts unexpected ordinary execution exceptions into the same failed task state, redacted error, failure-stage event, log event, and completion callback used for known failures. This intentionally catches `Exception`, not `BaseException`, so process-control exceptions are not absorbed.
+
+### Tests added
+
+| Test | What it verifies | Result |
+|---|---|---|
+| `test_agent_hub_unexpected_provider_failure_marks_task_failed` | An unexpected model-provider exception produces a terminal failed task with the source error preserved. | PASS after repair; it failed before the repair. |
+| `test_agent_hub_cancel_control_requests_active_task_cancellation` | The real Agent Hub cancel control signals an active task’s cancellation event and returns a completed control result. | PASS. |
+
+### Final verification for this milestone
+
+| Command / check | Result |
+|---|---|
+| Python compile | PASS |
+| Python test suite with `ResourceWarning` treated as error | PASS — 19 tests |
+| `:app:testDebugUnitTest :app:assembleDebug --no-daemon` | PASS; Android JVM unit-test task remains `NO-SOURCE`; debug APK was produced (32,032,403 bytes during final verification). |
+| Hermes local binding and constant-time bearer-token comparison | PASS by source inspection. |
+| Agent Hub allowlisted non-shell test execution | PASS by source inspection. |
+| `:app:verifyReleaseSigning --no-daemon` | BLOCKED as intended: explicit fail-closed missing-signing error, with no circular dependency. |
+| `adb devices -l` | DEVICE TESTING BLOCKED — no device or emulator attached. |
+| `git diff --check` | PASS. |
+
+### Warning classification and remaining limits
+
+Chaquopy Python 3.11 availability, Android SDK XML-version, Chaquopy incremental watcher, TensorFlow namespace, and debug native-library stripping messages remain non-blocking toolchain/dependency warnings because the full debug build passed. Kotlin’s redundant `else`, deprecated permission API, and unused SkillSandbox/VirtualComputer values remain deferred warnings; no demonstrated runtime defect required scope expansion.
+
+No release APK was produced because valid signing material was not available. No device/emulator smoke test was performed because no Android target was attached. The next useful milestone remains Android device/emulator lifecycle and instrumentation testing rather than a broad architectural rewrite.
