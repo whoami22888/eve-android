@@ -3,7 +3,7 @@ name: Eve Agent Hub CI
 on:
   pull_request:
   push:
-    branches: [ main, feat/eve-agent-hub ]
+    branches: [ main, feat/eve-agent-hub, fix/main-phase2-4-hardening ]
 
 jobs:
   python-provider-tests:
@@ -37,8 +37,7 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.11.15'
       - name: Verify Python executable
