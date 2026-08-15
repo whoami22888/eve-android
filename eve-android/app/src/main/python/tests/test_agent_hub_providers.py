@@ -2,6 +2,8 @@ import json
 import os
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -10,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from eve.agent_hub_agent import AgentHubAgent, _safe_env
 from eve.hermes_agent import HermesAgent
+from eve.orchestrator import EVE
 from eve.model_provider import (
     AnthropicProvider,
     GeminiProvider,
@@ -139,6 +142,61 @@ class ProviderTests(unittest.TestCase):
             self.assertEqual(second.status_code, 202)
             self.assertEqual(second.get_json()["duplicate"], True)
             self.assertEqual(hermes.task_queue.qsize(), 1)
+
+    def test_orchestrator_stops_registered_agents(self):
+        class StopProbe:
+            def __init__(self):
+                self.stopped = False
+
+            def set_task_queue(self, queue):
+                self.queue = queue
+
+            def stop(self):
+                self.stopped = True
+
+        probe = StopProbe()
+        eve = EVE()
+        eve.register_agent("probe", probe)
+        eve.stop()
+        self.assertTrue(probe.stopped)
+
+    def test_orchestrator_accepts_task_driven_agent_without_run_loop(self):
+        class TaskDrivenProbe:
+            def set_task_queue(self, queue):
+                self.queue = queue
+
+        eve = EVE()
+        eve.register_agent("task_driven", TaskDrivenProbe())
+        thread = threading.Thread(target=eve.run, daemon=True)
+        thread.start()
+        time.sleep(0.05)
+        self.assertTrue(thread.is_alive())
+        eve.stop()
+        thread.join(2)
+        self.assertFalse(thread.is_alive())
+
+    def test_hermes_server_stops_and_new_instance_restarts(self):
+        def start(agent):
+            thread = threading.Thread(target=agent.run, daemon=True)
+            thread.start()
+            deadline = time.monotonic() + 2
+            while agent._server is None and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertIsNotNone(agent._server)
+            return thread
+
+        with tempfile.TemporaryDirectory() as directory:
+            first = HermesAgent(directory)
+            first_thread = start(first)
+            first.stop()
+            first_thread.join(2)
+            self.assertFalse(first_thread.is_alive())
+
+            second = HermesAgent(directory)
+            second_thread = start(second)
+            second.stop()
+            second_thread.join(2)
+            self.assertFalse(second_thread.is_alive())
 
 
 if __name__ == "__main__":

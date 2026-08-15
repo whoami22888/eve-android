@@ -45,7 +45,11 @@ class EVE:
         self.running = True; self.log("EVE started")
         with self._lock: agents_snapshot = list(self.agents.items())
         for name, agent in agents_snapshot:
-            threading.Thread(target=agent.run, name=f"eve-agent-{name}", daemon=True).start(); self.log(f"Agent '{name}' started")
+            run = getattr(agent, "run", None)
+            if not callable(run):
+                self.log(f"Agent '{name}' is task-driven and has no background run loop")
+                continue
+            threading.Thread(target=run, name=f"eve-agent-{name}", daemon=True).start(); self.log(f"Agent '{name}' started")
         while self.running:
             try:
                 task = self.task_queue.get(timeout=1)
@@ -57,6 +61,15 @@ class EVE:
 
     def stop(self) -> None:
         self.running = False
+        with self._lock: agents_snapshot = list(self.agents.items())
+        for name, agent in agents_snapshot:
+            stop = getattr(agent, "stop", None)
+            if not callable(stop):
+                continue
+            try:
+                stop()
+            except Exception as exc:
+                self.log(f"Agent '{name}' stop failed: {exc}", "ERROR")
         self._agent_hub_executor.shutdown(wait=False, cancel_futures=True)
 
     def _complete(self, task) -> None:

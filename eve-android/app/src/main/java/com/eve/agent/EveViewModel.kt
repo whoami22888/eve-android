@@ -70,7 +70,8 @@ class EveViewModel(application: Application) : AndroidViewModel(application) {
                                 status = if (event.failed) "failed" else "completed",
                                 progress = if (event.failed) existing.progress else 100,
                                 message = if (event.failed) event.result else "Pipeline completed",
-                                output = event.result,
+                                output = if (event.failed) existing.output else event.result,
+                                error = if (event.failed) event.result else "",
                                 updatedAt = System.currentTimeMillis()
                             ))
                             _pipelineRuns.postValue(pipelineStore.load())

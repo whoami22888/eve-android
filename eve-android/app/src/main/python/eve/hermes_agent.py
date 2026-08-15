@@ -10,6 +10,7 @@ import uuid
 from collections import OrderedDict
 
 from flask import Flask, request, jsonify
+from werkzeug.serving import make_server
 from .task_queue import Task, TaskQueue
 
 logger = logging.getLogger("EVE.HermesAgent")
@@ -39,10 +40,11 @@ def _load_or_create_token(data_dir: str) -> str:
     token_path = os.path.join(data_dir, "hermes_token.txt")
     try:
         if os.path.exists(token_path):
-            return open(token_path).read().strip()
+            with open(token_path, encoding="utf-8") as f:
+                return f.read().strip()
         token = secrets.token_hex(32)
         os.makedirs(data_dir, exist_ok=True)
-        with open(token_path, "w") as f:
+        with open(token_path, "w", encoding="utf-8") as f:
             f.write(token)
         return token
     except OSError as exc:
@@ -69,6 +71,9 @@ class HermesAgent:
         self.task_queue: TaskQueue = None
         self._accepted_task_ids: OrderedDict[str, None] = OrderedDict()
         self._accepted_task_ids_lock = threading.Lock()
+        self._server_lock = threading.Lock()
+        self._server = None
+        self._stopped = False
         self._token = _load_or_create_token(resolved_dir)
         self._port = _find_free_port()
         self._app = Flask(__name__)
@@ -132,11 +137,29 @@ class HermesAgent:
 
     def _persist_port(self) -> None:
         try:
-            with open(os.path.join(self._data_dir, "hermes_port.txt"), "w") as f:
+            with open(os.path.join(self._data_dir, "hermes_port.txt"), "w", encoding="utf-8") as f:
                 f.write(str(self._port))
         except OSError as exc:
             logger.warning("Could not persist Hermes port: %s", exc)
 
     def run(self) -> None:
+        with self._server_lock:
+            if self._stopped:
+                return
+            self._server = make_server("127.0.0.1", self._port, self._app, threaded=True)
         logger.info("HermesAgent HTTP gateway on 127.0.0.1:%d", self._port)
-        self._app.run(host="127.0.0.1", port=self._port, threaded=True, use_reloader=False)
+        try:
+            self._server.serve_forever()
+        finally:
+            with self._server_lock:
+                server = self._server
+                self._server = None
+            if server is not None:
+                server.server_close()
+
+    def stop(self) -> None:
+        with self._server_lock:
+            self._stopped = True
+            server = self._server
+        if server is not None:
+            server.shutdown()

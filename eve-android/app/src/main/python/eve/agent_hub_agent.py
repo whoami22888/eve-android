@@ -46,6 +46,16 @@ class AgentHubAgent:
         try: self.provider = build_provider(self.data_dir)
         except ModelProviderError as exc: self.provider = None; self.log(f"Model provider not configured: {exc}", "WARN")
     def set_task_queue(self, q): self.task_queue = q
+    def stop(self):
+        with self._state_lock:
+            cancel_events = list(self._cancel_events.values())
+            processes = list(self._active_processes.values())
+        for event in cancel_events:
+            event.set()
+        for process in processes:
+            try: process.kill()
+            except OSError: pass
+        self._executor.shutdown(wait=False, cancel_futures=True)
     def can_handle(self, task: Task) -> bool: return task.action in {"agent_hub", "agent_hub_control"}
     def _emit(self, method: str, *args):
         try:

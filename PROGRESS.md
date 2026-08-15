@@ -279,3 +279,51 @@ Both → Escalate any blockers immediately
 ### Current milestone status
 
 The reproducible local debug build/test baseline is verified. Release output remains intentionally blocked until valid signing material is supplied. No device smoke test was performed because no device or emulator was available.
+
+
+---
+
+## Runtime / Integration Verification — 2026-08-16
+
+**Starting commit:** `77f73ab43ed2cf53535ceb519ca045067e5e60eb` (`fix: restore reproducible Android build baseline`) on `main`.
+
+### Environment and initial baseline result
+
+The verified Java 17, Python 3.11.15, Android SDK 34, and Gradle 8.2 environment was reused. The initial direct Python unittest command failed because the local CPython 3.11 interpreter did not yet contain the project-declared `Flask` and `requests` test/runtime dependencies. This was an environment-only condition; no repository file was changed for it. After installing the exact requirements into CPython 3.11, the direct test command passed.
+
+| Command | Result | Verified detail |
+|---|---|---|
+| `python3.11 -m compileall -q eve-android/app/src/main/python` | PASS | Completed successfully. |
+| `python3.11 -W error::ResourceWarning -m unittest discover -s eve-android/app/src/main/python/tests -p 'test_*.py' -v` | PASS | 17 tests passed. |
+| `JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 ANDROID_HOME=/home/ubuntu/.android-sdk ./gradlew :app:testDebugUnitTest :app:assembleDebug --no-daemon` | PASS | Gradle completed successfully; the Android unit-test task reported `NO-SOURCE`; debug APK was produced. |
+| `adb devices -l` | DEVICE/EMULATOR TESTING BLOCKED | No Android device or emulator was available. |
+
+### Confirmed runtime repairs
+
+1. **Orchestrator startup and shutdown.** `EVE.run()` previously assumed every registered agent implemented `run()`. `HacxgentAgent` is task-driven and has no such method, so normal orchestrator startup could fail before servicing queued work. Startup now skips task-driven agents without a background loop. `EVE.stop()` now invokes explicit `stop()` hooks when agents provide them.
+2. **Hermes server lifecycle.** Hermes previously used Flask's blocking development-server entry point with no explicit shutdown hook. A service stop could leave the local HTTP listener alive. Hermes now owns a loopback WSGI server, exposes `stop()`, releases the listener on shutdown, and was tested across stop/restart.
+3. **Agent Hub worker lifecycle.** `AgentHubAgent.stop()` now signals active task cancellation, terminates active subprocess test jobs, and shuts down queued worker execution. This hook is called by orchestrator shutdown.
+4. **Pipeline failure persistence.** Failed terminal task events previously stored the failure string as normal `output` while leaving the persistent `error` field stale or empty. Failed completion now persists the terminal error; a later successful completion clears stale errors.
+5. **Hermes file resource cleanup.** Runtime test coverage exposed an unclosed persisted-token reader. The token and port file operations now use explicit UTF-8 context managers; tests were rerun with `ResourceWarning` promoted to errors.
+
+### Focused integration coverage added
+
+- A duplicate task ID is queued exactly once.
+- The orchestrator calls shutdown hooks on registered agents.
+- A task-driven agent without a `run()` loop does not crash orchestrator startup.
+- Hermes starts, stops, releases its listener, and a new Hermes instance starts successfully afterward.
+
+### Warning classification
+
+- **Non-blocking toolchain warning:** Chaquopy reports that Python 3.11 may have fewer packages available. The declared dependencies and debug APK build succeeded.
+- **Non-blocking toolchain warning:** Android command-line tools report an SDK XML version mismatch. The Android build and debug APK completed successfully.
+- **Non-blocking incremental-build message:** Chaquopy reports `Already watching path`; it did not fail the final build.
+- **Intentional/known limitation:** `:app:testDebugUnitTest` reports `NO-SOURCE`; Android JVM unit-test coverage does not yet exist.
+
+### Security and runtime boundary check
+
+The modified Hermes implementation remains bound to `127.0.0.1` and retains bearer-token authentication with constant-time token comparison. Agent Hub test execution remains allowlisted, non-shell, and workspace-bounded. Release signing remains fail-closed. No device test, release APK, or full Android service lifecycle test was performed because no device/emulator and no release-signing credentials were available.
+
+### Remaining blockers and recommended next milestone
+
+The immediate runtime-integration verification milestone is complete for local Python/HTTP integration and the Android debug build. The next justified milestone is **device/emulator lifecycle instrumentation**, covering foreground-service creation, accessibility-disabled behavior, Hermes startup, submission/retry, cancellation, process death, and recovery. Broader IPC redesign, persistence migration, and SkillSandbox implementation remain deferred.
