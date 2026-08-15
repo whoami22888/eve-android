@@ -1,10 +1,15 @@
 import json
 import os
+import sys
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 from eve.agent_hub_agent import AgentHubAgent, _safe_env
+from eve.hermes_agent import HermesAgent
 from eve.model_provider import (
     AnthropicProvider,
     GeminiProvider,
@@ -14,7 +19,7 @@ from eve.model_provider import (
     _auto_model,
     load_model_config,
 )
-from eve.task_queue import Task
+from eve.task_queue import Task, TaskQueue
 from eve.workspace import ProjectWorkspace, WorkspaceError
 
 
@@ -120,6 +125,20 @@ class ProviderTests(unittest.TestCase):
             agent.assign_task(task)
             self.assertEqual(task.status, "failed")
             self.assertIn("invalid project", task.error.lower())
+
+    def test_hermes_repeated_task_id_is_queued_once(self):
+        with tempfile.TemporaryDirectory() as directory:
+            hermes = HermesAgent(directory)
+            hermes.set_task_queue(TaskQueue())
+            client = hermes._app.test_client()
+            payload = {"action": "agent_hub", "params": {"task_id": "a" * 32}}
+            headers = {"Authorization": f"Bearer {hermes._token}"}
+            first = client.post("/command", json=payload, headers=headers)
+            second = client.post("/command", json=payload, headers=headers)
+            self.assertEqual(first.status_code, 202)
+            self.assertEqual(second.status_code, 202)
+            self.assertEqual(second.get_json()["duplicate"], True)
+            self.assertEqual(hermes.task_queue.qsize(), 1)
 
 
 if __name__ == "__main__":

@@ -228,3 +228,54 @@ Day 5:
 **Tasklet** → Create design docs in repo
 
 Both → Escalate any blockers immediately
+
+
+---
+
+## Build Baseline Verification — 2026-08-16
+
+**Starting commit and current commit before this session's commit**: `34e720e` (`fix: fail closed on missing release signing configuration`) on branch `main`.
+
+### Verified environment
+
+| Component | Verified state |
+|---|---|
+| Java | OpenJDK 17.0.19 at `/usr/lib/jvm/java-17-openjdk-amd64` |
+| Python | CPython 3.11.15 at `/opt/python-3.11.15/bin/python3.11` |
+| Node / pnpm | Node 22.13.0 / pnpm 11.21.0; pnpm configuration was not changed |
+| Gradle | Wrapper 8.2 started successfully with Java 17 |
+| Android SDK | Local SDK at `/home/ubuntu/.android-sdk`; installed `platform-tools`, `platforms;android-34`, and `build-tools;34.0.0` |
+| Android configuration | `compileSdk 34`, `targetSdk 34`, `minSdk 26`; Chaquopy 15.0.1 with Python 3.11 |
+
+### Verified tests and builds
+
+| Command | Result | Verified detail |
+|---|---|---|
+| `python3.11 -m compileall -q eve-android/app/src/main/python` | PASS | Completed successfully. |
+| `/home/ubuntu/.cache/eve-python311-test/bin/python -m unittest discover -s eve-android/app/src/main/python/tests -p 'test_*.py' -v` | PASS | 14 tests passed. |
+| `JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 ./gradlew :app:testDebugUnitTest --no-daemon` | PASS | Gradle completed successfully; the task reported `NO-SOURCE`, so no Android unit-test classes currently exist. |
+| `JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 ./gradlew :app:assembleDebug --no-daemon` | PASS | Debug APK generated at `eve-android/app/build/outputs/apk/debug/app-debug.apk` (32,050,548 bytes during final regression). |
+| `./gradlew :app:verifyReleaseSigning --no-daemon` | BLOCKED as intended | Missing `eve.keystore`, `KEYSTORE_PASS`, and `KEY_PASS` caused the explicit fail-closed signing error. |
+| `./gradlew :app:assembleRelease --no-daemon` | BLOCKED as intended | Release request stopped at the verified signing gate; no unsigned release was produced. |
+| `adb devices -l` | DEVICE TESTING NOT AVAILABLE | No emulator or physical device was attached. |
+
+### Actual repairs applied
+
+1. Restored Python unittest discovery by adding the local Python source directory to `sys.path` in `test_agent_hub_providers.py`. The previous failure was `ModuleNotFoundError: No module named 'eve'`.
+2. Restored the retained Hermes startup retry behavior in `EveService.kt`: token and port files are both required; retry delays are bounded; connection failures retry; terminal failure is logged.
+3. Added lifecycle protection for Hermes submission retries: pending callbacks and in-flight HTTP calls are cancelled during service destruction, and submissions do not continue once the service is stopping.
+4. Added bounded, thread-safe Hermes task-ID idempotency (1,024 recent IDs) and a regression test proving a repeated task ID is queued exactly once. This prevents a retry after an uncertain HTTP failure from enqueuing a duplicate task in the current runtime.
+5. Corrected a release-signing self-dependency in `app/build.gradle`. The signing verification task is now excluded from its own release-task dependency matching; the fail-closed signing behavior remains enforced and was directly verified.
+
+### Remaining warnings and deferred work
+
+- Chaquopy warns that Python 3.11 may have fewer available packages. The declared Flask and requests dependencies built successfully for the debug APK.
+- The Android command-line tools emit an SDK XML version warning; the unit-test task and debug APK build complete successfully.
+- Chaquopy emits an `Already watching path` message during incremental builds; it did not prevent the final successful build.
+- The debug APK packages several native libraries without stripping; this is non-blocking for the debug variant.
+- `:app:testDebugUnitTest` has no Android unit-test source. Device/emulator lifecycle tests remain unavailable in this environment.
+- The focused security scan found no newly introduced hard-coded secrets or externally bound Hermes listener. Hermes remains bound to `127.0.0.1` with bearer-token authentication. Broad permissions and unimplemented SkillSandbox work remain deferred architectural hardening items.
+
+### Current milestone status
+
+The reproducible local debug build/test baseline is verified. Release output remains intentionally blocked until valid signing material is supplied. No device smoke test was performed because no device or emulator was available.

@@ -5,7 +5,9 @@ import os
 import re
 import secrets
 import socket
+import threading
 import uuid
+from collections import OrderedDict
 
 from flask import Flask, request, jsonify
 from .task_queue import Task, TaskQueue
@@ -13,6 +15,7 @@ from .task_queue import Task, TaskQueue
 logger = logging.getLogger("EVE.HermesAgent")
 DEFAULT_PORT = 5001
 PORT_RANGE = range(DEFAULT_PORT, DEFAULT_PORT + 10)
+MAX_RECENT_TASK_IDS = 1024
 
 _HACXGENT_ACTIONS = frozenset({
     "screenshot", "scan", "audit", "capture", "analyze",
@@ -64,6 +67,8 @@ class HermesAgent:
         resolved_dir = data_dir or os.environ.get("EVE_DATA_DIR") or "/data/data/com.eve.agent/files"
         self._data_dir = resolved_dir
         self.task_queue: TaskQueue = None
+        self._accepted_task_ids: OrderedDict[str, None] = OrderedDict()
+        self._accepted_task_ids_lock = threading.Lock()
         self._token = _load_or_create_token(resolved_dir)
         self._port = _find_free_port()
         self._app = Flask(__name__)
@@ -96,6 +101,13 @@ class HermesAgent:
             requested_id = str(params.pop("task_id", "")).strip().lower()
             task_id = requested_id if _ID_RE.fullmatch(requested_id) else uuid.uuid4().hex
             target = _route_action(action)
+            with self._accepted_task_ids_lock:
+                if task_id in self._accepted_task_ids:
+                    self._accepted_task_ids.move_to_end(task_id)
+                    return jsonify({"status": "accepted", "task_id": task_id, "routed_to": target, "port": self._port, "duplicate": True}), 202
+                self._accepted_task_ids[task_id] = None
+                if len(self._accepted_task_ids) > MAX_RECENT_TASK_IDS:
+                    self._accepted_task_ids.popitem(last=False)
             task = Task(agent=target, action=action, params=params, task_id=task_id)
             self.task_queue.put(task)
             return jsonify({"status": "accepted", "task_id": task.id, "routed_to": target, "port": self._port}), 202
