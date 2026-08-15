@@ -7,7 +7,9 @@ import android.app.Service
 import android.content.Intent
 import android.os.Binder
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.provider.Settings
 import androidx.core.app.NotificationCompat
 import com.chaquo.python.Python
@@ -19,6 +21,7 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.io.File
+import java.io.IOException
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 
@@ -26,6 +29,7 @@ class EveService : Service() {
     private lateinit var eveInstance: PyObject
     private lateinit var crashReporter: CrashReporter
     private val okHttp = OkHttpClient.Builder().connectTimeout(5, TimeUnit.SECONDS).readTimeout(10, TimeUnit.SECONDS).build()
+    private val startupHandler = Handler(Looper.getMainLooper())
 
     override fun onCreate() {
         super.onCreate(); crashReporter = CrashReporter(applicationContext); installUncaughtExceptionHandler(); startForeground(NOTIFICATION_ID, buildNotification())
@@ -64,16 +68,34 @@ class EveService : Service() {
     inner class LocalBinder : Binder() { fun getService(): EveService = this@EveService }
 
     fun submitTask(action: String, params: Map<String, String> = emptyMap(), taskId: String = UUID.randomUUID().toString().replace("-", "")) {
+        submitTaskWhenHermesReady(action, params, taskId, 0)
+    }
+
+    private fun submitTaskWhenHermesReady(action: String, params: Map<String, String>, taskId: String, attempt: Int) {
         val tokenFile = File(filesDir, "hermes_token.txt"); val portFile = File(filesDir, "hermes_port.txt")
-        if (!tokenFile.exists()) { EveEventBus.emit(EveEvent.LogLine("EVE runtime is still starting", "WARN")); return }
-        val token = tokenFile.readText().trim(); val port = portFile.takeIf { it.exists() }?.readText()?.trim()?.toIntOrNull() ?: 5001
+        val token = tokenFile.takeIf { it.exists() }?.readText()?.trim().orEmpty()
+        val port = portFile.takeIf { it.exists() }?.readText()?.trim()?.toIntOrNull()
+        if (token.isBlank() || port == null) {
+            retryHermesSubmit(action, params, taskId, attempt, "EVE runtime is still starting")
+            return
+        }
         val safeParams = params.toMutableMap().apply { put("task_id", taskId) }
         val body = JSONObject().apply { put("action", action); put("params", JSONObject(safeParams as Map<*, *>)) }.toString().toRequestBody("application/json".toMediaType())
         val request = Request.Builder().url("http://127.0.0.1:$port/command").addHeader("Authorization", "Bearer $token").post(body).build()
         okHttp.newCall(request).enqueue(object : okhttp3.Callback {
-            override fun onFailure(call: okhttp3.Call, e: java.io.IOException) { EveEventBus.emit(EveEvent.LogLine("Task submit failed ($action): ${e.message}", "ERROR")) }
+            override fun onFailure(call: okhttp3.Call, e: IOException) { retryHermesSubmit(action, params, taskId, attempt, "Task submit failed ($action): ${e.message}") }
             override fun onResponse(call: okhttp3.Call, response: okhttp3.Response) { response.use { val detail = response.body?.string().orEmpty().take(300); EveEventBus.emit(EveEvent.LogLine(if (response.isSuccessful) "Task accepted: $action (${response.code})" else "Task rejected: $action (${response.code}) $detail", if (response.isSuccessful) "INFO" else "ERROR")) } }
         })
+    }
+
+    private fun retryHermesSubmit(action: String, params: Map<String, String>, taskId: String, attempt: Int, message: String) {
+        if (attempt >= MAX_HERMES_SUBMIT_ATTEMPTS) {
+            EveEventBus.emit(EveEvent.LogLine("$message; giving up after ${attempt + 1} attempts", "ERROR"))
+            return
+        }
+        val delayMs = HERMES_SUBMIT_RETRY_DELAYS_MS[attempt.coerceAtMost(HERMES_SUBMIT_RETRY_DELAYS_MS.lastIndex)]
+        EveEventBus.emit(EveEvent.LogLine("$message; retrying task submit in ${delayMs}ms", "WARN"))
+        startupHandler.postDelayed({ submitTaskWhenHermesReady(action, params, taskId, attempt + 1) }, delayMs)
     }
 
     fun controlPipeline(taskId: String, command: String, task: String = "", project: String = "default", stage: String = "Plan") =
@@ -97,5 +119,9 @@ class EveService : Service() {
     private fun buildNotification(): Notification { val channelId = "eve_channel"; if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) getSystemService(NotificationManager::class.java).createNotificationChannel(NotificationChannel(channelId, "EVE Agent", NotificationManager.IMPORTANCE_LOW)); return NotificationCompat.Builder(this, channelId).setContentTitle("EVE Agent").setContentText("EVE Agent Hub running").setSmallIcon(android.R.drawable.ic_dialog_info).setOngoing(true).build() }
     private fun isAccessibilityServiceEnabled(): Boolean { val value = Settings.Secure.getString(contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES) ?: return false; return value.contains("${packageName}/.VirtualAccessibilityService") }
     private fun installUncaughtExceptionHandler() { val existing = Thread.getDefaultUncaughtExceptionHandler(); Thread.setDefaultUncaughtExceptionHandler { thread, throwable -> crashReporter.logException(throwable, "UncaughtException[${thread.name}]"); EveEventBus.emit(EveEvent.LogLine("CRASH in ${thread.name}: ${throwable.message}", "ERROR")); existing?.uncaughtException(thread, throwable) } }
-    companion object { private const val NOTIFICATION_ID = 1 }
+    companion object {
+        private const val NOTIFICATION_ID = 1
+        private const val MAX_HERMES_SUBMIT_ATTEMPTS = 6
+        private val HERMES_SUBMIT_RETRY_DELAYS_MS = longArrayOf(250L, 500L, 1_000L, 2_000L, 3_000L, 5_000L)
+    }
 }

@@ -228,3 +228,26 @@ Day 5:
 **Tasklet** → Create design docs in repo
 
 Both → Escalate any blockers immediately
+
+---
+
+## 2026-08-15 Baseline Verification Update
+
+**Starting Commit**: `34e720e` (`fix: fail closed on missing release signing configuration`)
+**Branch**: `work`
+
+### Verified Results
+
+- `python3 --version` reported `Python 3.11.15`.
+- `python3 -m compileall -q eve-android/app/src/main/python` passed.
+- `python3 -m unittest discover -s eve-android/app/src/main/python/tests -p 'test_*.py' -v` initially failed because the tests start directory did not put `eve-android/app/src/main/python` on `sys.path`; after the test import-path fix, 13 tests passed.
+- `JAVA_HOME=/root/.local/share/mise/installs/java/17 ./gradlew --version` passed and reported Gradle 8.2.
+- The ambient `JAVA_HOME` is invalid (`/usr/lib/jvm/java-17-openjdk-amd64`), so Gradle commands require the corrected `JAVA_HOME` value in this container.
+- `JAVA_HOME=/root/.local/share/mise/installs/java/17 ./gradlew :app:testDebugUnitTest --no-daemon` is blocked because no Android SDK location is configured.
+- `JAVA_HOME=/root/.local/share/mise/installs/java/17 ./gradlew :app:assembleDebug --no-daemon` is blocked because no Android SDK location is configured.
+- Hermes startup readiness was inspected in `EveService.submitTask`; submissions could return before Hermes token/port files were available. The service now retries submission with bounded delays and emits a clear error if retries are exhausted.
+
+### Current Limitations
+
+- Android unit tests and debug APK assembly still need to be run in an environment with `ANDROID_HOME` or `sdk.dir` configured.
+- No release build or device/emulator test was run during this update.
