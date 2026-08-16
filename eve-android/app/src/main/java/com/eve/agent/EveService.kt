@@ -41,9 +41,9 @@ class EveService : Service() {
         val py = Python.getInstance(); val env = requireNotNull(py.getModule("os").get("environ")) { "Python os.environ is unavailable" }
         env.callAttr("__setitem__", "EVE_DATA_DIR", filesDir.absolutePath); applyModelProviderEnvironment(env)
         val eveModule = py.getModule("eve.orchestrator"); eveInstance = eveModule.callAttr("EVE")
-        val hermes = py.getModule("eve.hermes_agent").callAttr("HermesAgent").call(filesDir.absolutePath)
-        val hacxgent = py.getModule("eve.hacxgent_agent").callAttr("HacxgentAgent").call()
-        val agentHub = py.getModule("eve.agent_hub_agent").callAttr("AgentHubAgent").call(filesDir.absolutePath)
+        val hermes = py.getModule("eve.hermes_agent").callAttr("HermesAgent", filesDir.absolutePath)
+        val hacxgent = py.getModule("eve.hacxgent_agent").callAttr("HacxgentAgent")
+        val agentHub = py.getModule("eve.agent_hub_agent").callAttr("AgentHubAgent", filesDir.absolutePath)
         eveInstance.callAttr("register_agent", "hermes", hermes); eveInstance.callAttr("register_agent", "agent_hub", agentHub); eveInstance.callAttr("register_agent", "hacxgent", hacxgent)
         Thread({ eveInstance.callAttr("run") }, "eve-orchestrator").apply { isDaemon = true; start() }
         EveEventBus.emit(EveEvent.StatusChanged("EVE is running — Agent Hub ready"))
