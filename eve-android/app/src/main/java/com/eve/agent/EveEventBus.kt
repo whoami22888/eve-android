@@ -6,6 +6,14 @@ import kotlinx.coroutines.flow.asSharedFlow
 
 sealed class EveEvent {
     data class StatusChanged(val status: String) : EveEvent()
+    data class RuntimeStatus(
+        val runtime: String,
+        val hermes: String,
+        val provider: String,
+        val accessibility: String,
+        val detail: String = ""
+    ) : EveEvent()
+    data class ProviderStatus(val message: String, val ready: Boolean) : EveEvent()
     data class LogLine(val message: String, val level: String = "INFO") : EveEvent()
     data class TaskCompleted(
         val taskId: String,

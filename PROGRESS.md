@@ -599,3 +599,30 @@ This confirms the corrected app process, foreground service, Chaquopy runtime, a
 ### Remaining release blocker
 
 Android 16 displayed a separate 16 KB page-size native-library compatibility warning for third-party Chaquopy and TensorFlow Lite artifacts. This was not modified in the physical-crash repair: upgrading or rebuilding those artifacts requires an isolated dependency compatibility plan and another device validation before a production release targeting 16 KB page-size devices.
+
+---
+## Live Dashboard and AI Responsiveness — 2026-08-16
+
+### Confirmed user-facing defects
+
+The physical-device review identified two UX failures. `EveService.onCreate` automatically launched Android Accessibility Settings whenever Accessibility was disabled. Because the foreground service can be recreated, this repeatedly reopened a system window without a user action. Separately, the dashboard showed only generic strings while model-provider test and refresh outcomes remained confined to a local Model Settings label or the log, making an unconfigured provider appear as a silent AI failure.
+
+### Repairs
+
+`EveService` no longer launches Accessibility Settings automatically. Accessibility remains optional and is now presented as an explicit status plus an in-app Setup action. The shared event model now carries structured runtime and provider status. `EveViewModel` projects runtime, Hermes, provider, Accessibility, and latest-error detail into a single live snapshot. Provider refresh and connection-test errors now publish clear shared status rather than being visible only on the model-settings screen.
+
+The Dashboard was rebuilt as **EVE Live Control**. It exposes runtime state, Hermes readiness, AI configuration state, Accessibility state, actionable detail, recent runtime logs, a manual refresh action, and explicit AI Models / Optional Setup navigation controls. The dashboard never opens a system settings window by itself.
+
+### Verification
+
+| Check | Result |
+|---|---|
+| Python compilation and regression tests | PASS — 22 tests with `ResourceWarning` treated as an error |
+| Android JVM test, lint, and debug build | PASS |
+| Physical-device installation | PASS — `adb install -r` returned `Success` |
+| Physical-device launch | PASS — EVE remained alive after 20 seconds with no EVE fatal exception or ANR in filtered log |
+| Dashboard UI | PASS — screenshot confirmed EVE Live Control, Runtime Running, Hermes Ready on localhost, optional Accessibility, and the manual actions |
+| Automatic Accessibility Settings launch | PASS — no system settings window reopened during the dashboard validation |
+| AI response visibility | PASS — dashboard explicitly reported `AI needs an API key`, identifying configuration as the remaining provider prerequisite |
+
+No API key was collected or stored during validation. The Android 16 16 KB native-library compatibility warning remains a separate release follow-up for Chaquopy and TensorFlow Lite artifacts.

@@ -36,7 +36,7 @@ class EveService : Service() {
     override fun onCreate() {
         super.onCreate(); isStopping = false; crashReporter = CrashReporter(applicationContext); installUncaughtExceptionHandler(); startForeground(NOTIFICATION_ID, buildNotification())
         VirtualComputer.init(applicationContext)
-        if (!isAccessibilityServiceEnabled()) startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        // Accessibility is user-controlled. Do not reopen Android Settings whenever the service restarts.
         if (!Python.isStarted()) Python.start(AndroidPlatform(this))
         val py = Python.getInstance(); val env = requireNotNull(py.getModule("os").get("environ")) { "Python os.environ is unavailable" }
         env.callAttr("__setitem__", "EVE_DATA_DIR", filesDir.absolutePath); applyModelProviderEnvironment(env)
@@ -47,6 +47,7 @@ class EveService : Service() {
         eveInstance.callAttr("register_agent", "hermes", hermes); eveInstance.callAttr("register_agent", "agent_hub", agentHub); eveInstance.callAttr("register_agent", "hacxgent", hacxgent)
         Thread({ eveInstance.callAttr("run") }, "eve-orchestrator").apply { isDaemon = true; start() }
         EveEventBus.emit(EveEvent.StatusChanged("EVE is running — Agent Hub ready"))
+        publishRuntimeStatus("Runtime started. Configure AI Models when you are ready to use Agent Hub.")
     }
 
     fun refreshModelProvider() {
@@ -54,14 +55,38 @@ class EveService : Service() {
             try {
                 val py = if (!Python.isStarted()) { Python.start(AndroidPlatform(this)); Python.getInstance() } else Python.getInstance()
                 val env = requireNotNull(py.getModule("os").get("environ")) { "Python os.environ is unavailable" }; applyModelProviderEnvironment(env)
-                py.getModule("eve.agent_hub_agent").callAttr("refresh_default_provider", filesDir.absolutePath); EveEventBus.emit(EveEvent.StatusChanged("AI model settings applied"))
-            } catch (e: Exception) { EveEventBus.emit(EveEvent.LogLine("Could not refresh AI model settings: ${e.message}", "ERROR")) }
+                py.getModule("eve.agent_hub_agent").callAttr("refresh_default_provider", filesDir.absolutePath)
+                EveEventBus.emit(EveEvent.StatusChanged("AI model settings applied"))
+                publishRuntimeStatus("AI model settings applied")
+            } catch (e: Exception) {
+                val message = "Could not refresh AI model settings: ${e.message ?: "unknown error"}"
+                EveEventBus.emit(EveEvent.LogLine(message, "ERROR"))
+                EveEventBus.emit(EveEvent.ProviderStatus(message, false))
+            }
         }.start()
     }
 
     private fun applyModelProviderEnvironment(env: PyObject) {
         val config = ModelProviderStore(this).load()
         env.callAttr("__setitem__", "EVE_MODEL_PROVIDER", config.provider); env.callAttr("__setitem__", "EVE_MODEL_BASE_URL", config.baseUrl); env.callAttr("__setitem__", "EVE_MODEL_NAME", config.model); env.callAttr("__setitem__", "EVE_MODEL_API_KEY", config.apiKey); env.callAttr("__setitem__", "EVE_MODEL_TIMEOUT", config.timeoutSeconds.toString())
+    }
+
+    fun publishRuntimeStatus(detail: String = "") {
+        val config = ModelProviderStore(this).load()
+        val portReady = File(filesDir, "hermes_port.txt").takeIf { it.exists() }?.readText()?.trim()?.toIntOrNull() != null
+        val tokenReady = File(filesDir, "hermes_token.txt").takeIf { it.exists() }?.readText()?.trim().orEmpty().isNotBlank()
+        val provider = when {
+            config.model.isBlank() -> "AI needs a model selection"
+            config.provider != "ollama" && config.apiKey.isBlank() -> "AI needs an API key"
+            else -> "AI configured: ${config.provider} / ${config.model}"
+        }
+        EveEventBus.emit(EveEvent.RuntimeStatus(
+            runtime = if (isStopping) "Stopping" else "Running",
+            hermes = if (portReady && tokenReady) "Ready on localhost" else "Starting…",
+            provider = provider,
+            accessibility = if (isAccessibilityServiceEnabled()) "Enabled" else "Optional — enable from Setup",
+            detail = detail
+        ))
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
@@ -120,15 +145,29 @@ class EveService : Service() {
     fun cancelAgentHub() = submitTask("agent_hub_control", mapOf("command" to "cancel", "task_id" to "all"))
 
     fun testModelProvider(callback: (String) -> Unit) {
-        val py = try { if (!Python.isStarted()) Python.start(AndroidPlatform(this)); Python.getInstance() } catch (e: Exception) { callback("Python runtime unavailable: ${e.message}"); return }
+        val py = try { if (!Python.isStarted()) Python.start(AndroidPlatform(this)); Python.getInstance() } catch (e: Exception) {
+            val message = "Python runtime unavailable: ${e.message ?: "unknown error"}"
+            EveEventBus.emit(EveEvent.ProviderStatus(message, false)); callback(message); return
+        }
         Thread {
             try {
                 val env = requireNotNull(py.getModule("os").get("environ")) { "Python os.environ is unavailable" }; applyModelProviderEnvironment(env); val config = ModelProviderStore(this).load()
-                if (config.model.isBlank()) { callback("EVE needs a model selection. Choose Auto or a model first."); return@Thread }
-                if (config.provider != "ollama" && config.apiKey.isBlank()) { callback("${config.provider} requires an API key. Add it in AI Models."); return@Thread }
+                if (config.model.isBlank()) {
+                    val message = "EVE needs a model selection. Choose Auto or a model first."
+                    EveEventBus.emit(EveEvent.ProviderStatus(message, false)); callback(message); return@Thread
+                }
+                if (config.provider != "ollama" && config.apiKey.isBlank()) {
+                    val message = "${config.provider} requires an API key. Add it in AI Models."
+                    EveEventBus.emit(EveEvent.ProviderStatus(message, false)); callback(message); return@Thread
+                }
+                EveEventBus.emit(EveEvent.ProviderStatus("Testing ${config.provider}…", false))
                 val provider = py.getModule("eve.model_provider").callAttr("build_provider", filesDir.absolutePath); val result = provider.callAttr("health_check").toString().trim()
-                callback(if (result.equals("OK", true)) "✓ ${config.provider} connected — ${config.model}" else "✓ ${config.provider} responded: $result")
-            } catch (e: Exception) { callback("Provider test failed: ${e.message ?: "unknown error"}") }
+                val message = if (result.equals("OK", true)) "✓ ${config.provider} connected — ${config.model}" else "✓ ${config.provider} responded: $result"
+                EveEventBus.emit(EveEvent.ProviderStatus(message, true)); callback(message)
+            } catch (e: Exception) {
+                val message = "Provider test failed: ${e.message ?: "unknown error"}"
+                EveEventBus.emit(EveEvent.ProviderStatus(message, false)); callback(message)
+            }
         }.start()
     }
 

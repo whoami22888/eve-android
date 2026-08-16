@@ -7,6 +7,15 @@ import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.launch
 
+/** A concise live health summary rendered by the dashboard. */
+data class RuntimeSnapshot(
+    val runtime: String = "Starting…",
+    val hermes: String = "Waiting…",
+    val provider: String = "Not tested",
+    val accessibility: String = "Not enabled",
+    val detail: String = ""
+)
+
 /** Activity-scoped source of truth for dashboard, pipeline and history state. */
 class EveViewModel(application: Application) : AndroidViewModel(application) {
     private val pipelineStore = PipelineStore(application)
@@ -15,6 +24,8 @@ class EveViewModel(application: Application) : AndroidViewModel(application) {
     val status: LiveData<String> = _status
     private val _agentStatus = MutableLiveData("Agents: initialising…")
     val agentStatus: LiveData<String> = _agentStatus
+    private val _runtimeSnapshot = MutableLiveData(RuntimeSnapshot())
+    val runtimeSnapshot: LiveData<RuntimeSnapshot> = _runtimeSnapshot
     private val _logLines = MutableLiveData<List<String>>(emptyList())
     val logLines: LiveData<List<String>> = _logLines
     private val _taskHistory = MutableLiveData<List<HistoryItem>>(emptyList())
@@ -37,10 +48,28 @@ class EveViewModel(application: Application) : AndroidViewModel(application) {
             EveEventBus.events.collect { event ->
                 when (event) {
                     is EveEvent.StatusChanged -> _status.postValue(event.status)
+                    is EveEvent.RuntimeStatus -> _runtimeSnapshot.postValue(RuntimeSnapshot(
+                        runtime = event.runtime,
+                        hermes = event.hermes,
+                        provider = event.provider,
+                        accessibility = event.accessibility,
+                        detail = event.detail
+                    ))
+                    is EveEvent.ProviderStatus -> {
+                        val current = _runtimeSnapshot.value ?: RuntimeSnapshot()
+                        _runtimeSnapshot.postValue(current.copy(
+                            provider = event.message,
+                            detail = if (event.ready) current.detail else event.message
+                        ))
+                    }
                     is EveEvent.LogLine -> {
                         val line = "[${event.level}] ${event.message}"
                         val current = _logLines.value ?: emptyList()
                         _logLines.postValue((current + line).takeLast(200))
+                        if (event.level.equals("ERROR", ignoreCase = true)) {
+                            val health = _runtimeSnapshot.value ?: RuntimeSnapshot()
+                            _runtimeSnapshot.postValue(health.copy(detail = event.message))
+                        }
                     }
                     is EveEvent.PipelineStage -> {
                         val existing = pipelineStore.load().firstOrNull { it.taskId == event.taskId }
@@ -64,6 +93,10 @@ class EveViewModel(application: Application) : AndroidViewModel(application) {
                         val current = _taskHistory.value ?: emptyList()
                         _taskHistory.postValue((listOf(item) + current).take(500))
                         _agentStatus.postValue(if (event.failed) "Last task failed: ${event.action}" else "Last task done: ${event.action}")
+                        if (event.failed) {
+                            val health = _runtimeSnapshot.value ?: RuntimeSnapshot()
+                            _runtimeSnapshot.postValue(health.copy(detail = event.result))
+                        }
                         val existing = pipelineStore.load().firstOrNull { it.taskId == event.taskId }
                         if (existing != null) {
                             pipelineStore.upsert(existing.copy(
