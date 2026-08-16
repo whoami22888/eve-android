@@ -570,3 +570,32 @@ A final targeted source review found no new reproducible defect. Existing servic
 Release-signing verification remains fail-closed: `:app:verifyReleaseSigning` exited non-zero with the expected missing-signing-material message and without a circular dependency. The known Chaquopy, SDK XML, TensorFlow namespace, native stripping, Kotlin incomplete-sandbox/deprecation, and deprecated workspace dependency messages remain classified warnings; no warning was suppressed or changed without a demonstrated defect.
 
 No Tasklet code, dependency, architectural replacement, fake credential, signing bypass, or emulator package was introduced. The next required action is real Android runtime testing on a physical device or a properly provisioned Android-emulator host.
+
+---
+## Physical Device Runtime Verification — 2026-08-16
+
+### Device and direct ADB evidence
+
+A Samsung SM-S918B physical device (arm64, Android 16) was connected over authorized ADB. The first device launch exposed a real Chaquopy bridge defect: `EveService.kt` constructed each Python agent, then called the resulting instance a second time. The observed failure was `TypeError: 'HermesAgent' object is not callable` at `EveService.kt:43`.
+
+The first repair corrected the one-call constructor contract, but the device then exposed a second defect: the Python orchestrator attempted to start task-driven `AgentHubAgent` as a background worker even though it has no `run` method. The final repair starts only agents with a callable `run` method and logs task-driven Agent Hub and Hacxgent as on-demand agents.
+
+The reconciled source retains the physical-device constructor correction alongside upstream hardening. Full host verification passed after rebase: Python compilation; **22** Python tests with `ResourceWarning` treated as an error; Android debug JVM tests; Android lint; and debug APK assembly.
+
+### Successful physical runtime result
+
+The repaired debug APK installed successfully using `adb install -r`. After a clean launch, the EVE process remained alive beyond 25 seconds with no EVE `FATAL EXCEPTION`, Python exception, Chaquopy exception, or ANR in the filtered log. Device logs recorded:
+
+> `HermesAgent HTTP gateway on 127.0.0.1:5001`
+
+The app-private `hermes_port.txt` and 64-character `hermes_token.txt` files were present. With `adb forward tcp:5001 tcp:5001`, the device’s `/health` endpoint returned:
+
+```json
+{"agent":"hermes","port":5001,"status":"ok"}
+```
+
+This confirms the corrected app process, foreground service, Chaquopy runtime, agent lifecycle, Hermes initialization, loopback binding, and HTTP health endpoint on actual ARM64 hardware. Accessibility was intentionally not enabled; no API key, agent task, screen capture, or gesture injection was submitted.
+
+### Remaining release blocker
+
+Android 16 displayed a separate 16 KB page-size native-library compatibility warning for third-party Chaquopy and TensorFlow Lite artifacts. This was not modified in the physical-crash repair: upgrading or rebuilding those artifacts requires an isolated dependency compatibility plan and another device validation before a production release targeting 16 KB page-size devices.
