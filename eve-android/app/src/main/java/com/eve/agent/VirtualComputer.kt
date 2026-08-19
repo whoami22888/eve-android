@@ -84,11 +84,11 @@ class VirtualComputer private constructor(private val context: Context) {
      * Execute a script in the given language and return its stdout as a String.
      * Supported languages: "python", "shell" / "sh" / "bash".
      */
-    fun executeScript(language: String, script: String, args: List<String> = emptyList()): String {
+    fun executeScript(language: String, script: String): String {
         return when (language.lowercase()) {
-            "python"          -> executePython(script)
+            "python" -> executePython(script)
             "shell", "sh", "bash" -> executeShell(script)
-            else              -> "Unsupported language: $language"
+            else -> "Unsupported language: $language"
         }
     }
 
