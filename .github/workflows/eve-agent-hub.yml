@@ -5,6 +5,9 @@ on:
   push:
     branches: [ main, feat/eve-agent-hub ]
 
+permissions:
+  contents: read
+
 jobs:
   python-provider-tests:
     runs-on: ubuntu-latest
@@ -58,6 +61,17 @@ jobs:
             ${{ runner.os }}-gradle-
       - name: Build and run Android unit tests
         run: ./gradlew :app:assembleDebug :app:testDebugUnitTest --no-daemon
+      - name: Record exact APK SHA-256
+        run: sha256sum app/build/outputs/apk/debug/app-debug.apk > app/build/outputs/apk/debug/app-debug.apk.sha256
+      - name: Upload device-installable debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: eve-cloud-agent-debug-${{ github.sha }}
+          path: |
+            eve-android/app/build/outputs/apk/debug/app-debug.apk
+            eve-android/app/build/outputs/apk/debug/app-debug.apk.sha256
+          retention-days: 14
+          if-no-files-found: error
 
   typescript-typecheck:
     runs-on: ubuntu-latest
