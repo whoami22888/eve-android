@@ -1,0 +1,18 @@
+# Bridge only. Free service, disabled auto-deploy. No Hermes backend is provisioned.
+services:
+  - type: web
+    name: manus-hybrid-bridge
+    runtime: python
+    plan: free
+    region: singapore
+    autoDeploy: false
+    healthCheckPath: /health
+    buildCommand: pip install -r cloud_bridge/requirements.txt
+    startCommand: uvicorn cloud_bridge.app:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: AGENT_APP_TOKEN
+        sync: false
+      - key: HERMES_API_KEY
+        sync: false
+      - key: HERMES_BASE_URL
+        sync: false
